@@ -1,0 +1,4 @@
+groq
+streamlit
+requests
+pandas
