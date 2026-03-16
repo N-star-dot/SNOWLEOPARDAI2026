@@ -1,0 +1,12 @@
+# Secret Keys (NEVER share these)
+.env
+keys.py
+
+# Python environment & cache
+__pycache__/
+*.pyc
+venv/
+.env/
+
+# Streamlit local config
+.streamlit/config.toml
