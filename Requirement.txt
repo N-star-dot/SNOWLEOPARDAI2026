@@ -2,3 +2,5 @@ groq
 streamlit
 requests
 pandas
+pdfplumber
+audio-recorder-streamlit

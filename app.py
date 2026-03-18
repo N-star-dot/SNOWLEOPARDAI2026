@@ -2,40 +2,13 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import json
+import base64
+import io
 import agent 
+from datetime import datetime
 
-# --- 1. UI SETUP & THEME ---
+# --- 1. UI SETUP ---
 st.set_page_config(page_title="Acumen AI", page_icon="🌊", layout="wide")
-
-# The Great Wave Background & "Glassmorphism" Styling
-page_bg_img = """
-<style>
-[data-testid="stAppViewContainer"] {
-    background-image: url("https://upload.wikimedia.org/wikipedia/commons/b/b5/Great_Wave_off_Kanagawa2.jpg");
-    background-size: cover;
-    background-position: center;
-    background-attachment: fixed;
-}
-[data-testid="stHeader"] {
-    background: rgba(0,0,0,0);
-}
-/* Comfy Glassmorphism Chat Bubbles */
-[data-testid="stChatMessage"] {
-    background-color: rgba(255, 255, 255, 0.85);
-    backdrop-filter: blur(10px); /* The frosted glass effect */
-    border-radius: 15px;
-    padding: 15px;
-    box-shadow: 0px 8px 16px rgba(0,0,0,0.1);
-    border: 1px solid rgba(255, 255, 255, 0.5);
-}
-/* Minimalist Sidebar styling */
-[data-testid="stSidebar"] {
-    background-color: rgba(240, 242, 246, 0.95);
-}
-</style>
-"""
-st.markdown(page_bg_img, unsafe_allow_html=True)
-st.title("🌊 Acumen: Hybrid Neural Agent")
 
 # --- 2. MEMORY & STATE ---
 if "messages" not in st.session_state:
@@ -44,35 +17,768 @@ if "dataset_columns" not in st.session_state:
     st.session_state.dataset_columns = "IMDb default columns"
 if "active_mode" not in st.session_state:
     st.session_state.active_mode = "Cloud (Snow Leopard - IMDb)"
+if "confirmed_mode" not in st.session_state:
+    st.session_state.confirmed_mode = "Cloud (Snow Leopard - IMDb)"
+if "temperature" not in st.session_state:
+    st.session_state.temperature = 0.1
+if "contact_target" not in st.session_state:
+    st.session_state.contact_target = ""
+if "uploaded_image_b64" not in st.session_state:
+    st.session_state.uploaded_image_b64 = None
+if "uploaded_video_bytes" not in st.session_state:
+    st.session_state.uploaded_video_bytes = None
+if "voice_transcript" not in st.session_state:
+    st.session_state.voice_transcript = None
+
+# --- DYNAMIC THEME ENGINE ---
+is_cloud = "Cloud" in st.session_state.confirmed_mode
+
+# Shared font import
+FONT_IMPORT = "@import url('https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@400;500;600;700&family=Zen+Kaku+Gothic+New:wght@300;400;500;700&display=swap');"
+
+if is_cloud:
+    # ❄️ SNOW LEOPARD — glacial palette, ma spacing, frost glass, breathe pulse
+    ACCENT_U = "#8fa8c0"
+    theme_css = f"""
+    <style>
+    {FONT_IMPORT}
+
+    /* ── Base ── */
+    html, body, [data-testid="stAppViewContainer"] {{
+        font-family: 'Zen Kaku Gothic New', sans-serif;
+        background: #f0f4f8;
+        background-attachment: fixed;
+        color: #1a2a38;
+    }}
+    [data-testid="stAppViewContainer"] {{
+        background: linear-gradient(160deg, #f0f4f8 0%, #dde8f2 50%, #cfd9e8 100%);
+        background-attachment: fixed;
+    }}
+    /* subtle frost overlay — breathes like fog on glass */
+    [data-testid="stAppViewContainer"]::after {{
+        content: '';
+        position: fixed;
+        inset: 0;
+        background: radial-gradient(ellipse at 30% 40%, rgba(143,168,192,0.07) 0%, transparent 65%),
+                    radial-gradient(ellipse at 75% 70%, rgba(58,80,104,0.05) 0%, transparent 55%);
+        pointer-events: none;
+        z-index: 0;
+        animation: frost-breathe 8s ease-in-out infinite;
+    }}
+    @keyframes frost-breathe {{
+        0%,100% {{ opacity: 0.6; }}
+        50%      {{ opacity: 1; }}
+    }}
+    [data-testid="stHeader"] {{ background: transparent; }}
+
+    /* ── Wordmark ── */
+    .acuman-wordmark {{
+        font-family: 'Shippori Mincho', serif;
+        font-size: 2rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        color: #1a2a38;
+        line-height: 1.2;
+        margin: 0.5rem 0 0.25rem 0;
+    }}
+    .acuman-wordmark .u-pivot {{
+        color: {ACCENT_U};
+        font-style: italic;
+    }}
+    .acuman-sub {{
+        font-family: 'Zen Kaku Gothic New', sans-serif;
+        font-size: 0.78rem;
+        font-weight: 300;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: #6a8aa8;
+        margin-top: 0;
+    }}
+
+    /* ── Headings ── */
+    h1, h2, h3 {{
+        font-family: 'Shippori Mincho', serif !important;
+        color: #1a2a38 !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.02em !important;
+    }}
+    h2 {{ font-size: 1.35rem !important; }}
+    h3 {{ font-size: 1.1rem !important; }}
+
+    /* ── Sidebar ── */
+    [data-testid="stSidebar"] {{
+        background: linear-gradient(180deg, #1a2a38 0%, #0f1e2e 100%) !important;
+        border-right: 0.5px solid rgba(143,168,192,0.25) !important;
+        padding: 1.5rem 0 !important;
+    }}
+    [data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] > p {{
+        color: #c8dcea !important;
+        font-family: 'Zen Kaku Gothic New', sans-serif !important;
+    }}
+    [data-testid="stSidebar"] h1,
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3 {{
+        font-family: 'Shippori Mincho', serif !important;
+        color: #ddeeff !important;
+        letter-spacing: 0.06em !important;
+    }}
+    [data-testid="stSidebar"] hr {{
+        border: none;
+        border-top: 0.5px solid rgba(143,168,192,0.18);
+        margin: 1.2rem 0;
+    }}
+
+    /* ── Chat Bubbles — frosted glass ── */
+    [data-testid="stChatMessage"] {{
+        background: rgba(240,244,248,0.72);
+        backdrop-filter: blur(18px);
+        -webkit-backdrop-filter: blur(18px);
+        border-radius: 12px;
+        padding: 20px 24px;
+        box-shadow: 0 2px 16px rgba(58,80,104,0.08), inset 0 0.5px 0 rgba(255,255,255,0.9);
+        border: 0.5px solid rgba(143,168,192,0.28);
+        color: #1a2a38;
+        margin-bottom: 1rem;
+        transition: box-shadow 0.4s ease, border-color 0.4s ease;
+    }}
+    [data-testid="stChatMessage"]:hover {{
+        box-shadow: 0 4px 24px rgba(58,80,104,0.13), inset 0 0.5px 0 rgba(255,255,255,1);
+        border-color: rgba(143,168,192,0.45);
+    }}
+
+    /* ── Chat Input ── */
+    [data-testid="stChatInputContainer"] > div,
+    .stChatInput > div {{
+        background: rgba(240,244,248,0.8) !important;
+        border: 0.5px solid rgba(143,168,192,0.35) !important;
+        border-radius: 12px !important;
+        backdrop-filter: blur(12px);
+    }}
+    .stChatInput textarea {{
+        color: #1a2a38 !important;
+        font-family: 'Zen Kaku Gothic New', sans-serif !important;
+    }}
+
+    /* ── Expanders ── */
+    [data-testid="stExpander"] {{
+        background: rgba(240,244,248,0.6);
+        backdrop-filter: blur(10px);
+        border: 0.5px solid rgba(143,168,192,0.22);
+        border-radius: 12px;
+    }}
+
+    /* ── Buttons ── */
+    .stButton > button {{
+        background: #3a5068 !important;
+        color: #ddeeff !important;
+        border: 0.5px solid rgba(143,168,192,0.4) !important;
+        border-radius: 8px !important;
+        font-family: 'Zen Kaku Gothic New', sans-serif !important;
+        font-weight: 500 !important;
+        letter-spacing: 0.06em !important;
+        transition: all 0.35s ease !important;
+    }}
+    .stButton > button:hover {{
+        background: #4a6880 !important;
+        box-shadow: 0 0 18px rgba(143,168,192,0.22) !important;
+        transform: translateY(-1px) !important;
+    }}
+    .stDownloadButton > button {{
+        background: #3a5068 !important;
+        color: #ddeeff !important;
+        border-radius: 8px !important;
+        border: 0.5px solid rgba(143,168,192,0.3) !important;
+        font-family: 'Zen Kaku Gothic New', sans-serif !important;
+    }}
+
+    /* ── Slider ── */
+    .stSlider > div > div > div {{
+        background-color: {ACCENT_U} !important;
+    }}
+
+    /* ── Text ── */
+    p, label, .stMarkdown, .stCaption, small,
+    [data-testid="stMarkdownContainer"] > p,
+    [data-testid="stMarkdownContainer"] > span {{
+        color: #2a3c50 !important;
+        font-family: 'Zen Kaku Gothic New', sans-serif !important;
+    }}
+    
+    /* Ensure Streamlit icons (which are often empty spans or use specific font families) are not overridden */
+    span.st-emotion-cache-1vt4ygl, 
+    span.stIcon {{
+        font-family: inherit !important;
+    }}
+    [data-testid="stAppViewContainer"] .stMarkdown h1,
+    [data-testid="stAppViewContainer"] .stMarkdown h2,
+    [data-testid="stAppViewContainer"] .stMarkdown h3 {{
+        font-family: 'Shippori Mincho', serif !important;
+        color: #1a2a38 !important;
+    }}
+
+    /* ── Divider ── */
+    hr {{
+        border: none;
+        border-top: 0.5px solid rgba(143,168,192,0.2);
+        margin: 1.8rem 0;
+    }}
+    
+    /* ── Ambient Particles (Snow) ── */
+    .particle-container {{
+        position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden;
+    }}
+    .particle-snow {{
+        position: absolute; width: 6px; height: 6px;
+        background-image: url("data:image/svg+xml,%3Csvg width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%238fa8c0' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' xmlns='http://www.w3.org/2000/svg'%3E%3Cline x1='12' y1='2' x2='12' y2='22'%3E%3C/line%3E%3Cline x1='17' y1='5' x2='7' y2='19'%3E%3C/line%3E%3Cline x1='5' y1='17' x2='19' y2='7'%3E%3C/line%3E%3C/svg%3E");
+        background-size: contain; opacity: 0.25;
+        animation: snow-drift linear infinite;
+    }}
+    @keyframes snow-drift {{
+        0% {{ transform: translateY(-5vh) translateX(0) rotate(0deg); opacity: 0; }}
+        10% {{ opacity: 0.4; }}
+        90% {{ opacity: 0.4; }}
+        100% {{ transform: translateY(105vh) translateX(20px) rotate(180deg); opacity: 0; }}
+    }}
+    
+    /* ── Radio Sigil (Snowflake) ── */
+    div[role="radiogroup"] label[data-baseweb="radio"] div:first-child {{
+        background-color: transparent !important;
+        border: 1px solid rgba(143,168,192,0.4) !important;
+    }}
+    div[role="radiogroup"] label[data-baseweb="radio"] input:checked + div {{
+        background-color: {ACCENT_U} !important;
+        border-color: {ACCENT_U} !important;
+        background-image: url("data:image/svg+xml,%3Csvg width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' xmlns='http://www.w3.org/2000/svg'%3E%3Cline x1='12' y1='3' x2='12' y2='21'%3E%3C/line%3E%3Cline x1='19' y1='7.5' x2='5' y2='16.5'%3E%3C/line%3E%3Cline x1='5' y1='7.5' x2='19' y2='16.5'%3E%3C/line%3E%3C/svg%3E") !important;
+        background-position: center !important;
+        background-repeat: no-repeat !important;
+    }}
+    div[role="radiogroup"] label[data-baseweb="radio"] input:checked + div div {{ display: none; }}
+    
+    /* ── Slider Personality (Ice) ── */
+    div[data-testid="stThumbValue"] {{
+        background: {ACCENT_U} !important;
+        color: #fff !important;
+        font-family: 'Zen Kaku Gothic New', sans-serif !important;
+    }}
+    div[role="slider"] {{
+        background-color: #f0f4f8 !important;
+        border: 2px solid {ACCENT_U} !important;
+        box-shadow: 0 0 8px rgba(143,168,192,0.4) !important;
+        background-image: url("data:image/svg+xml,%3Csvg width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238fa8c0' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' xmlns='http://www.w3.org/2000/svg'%3E%3Cline x1='12' y1='4' x2='12' y2='20'%3E%3C/line%3E%3Cline x1='18' y1='8' x2='6' y2='16'%3E%3C/line%3E%3Cline x1='6' y1='8' x2='18' y2='16'%3E%3C/line%3E%3C/svg%3E") !important;
+        background-position: center !important;
+        background-repeat: no-repeat !important;
+        transition: transform 0.2s ease !important;
+    }}
+    div[role="slider"]:hover {{ transform: scale(1.15) !important; }}
+    
+    /* ── Mode Transition Overlay ── */
+    .mode-transition-overlay {{
+        position: fixed; inset: 0; background: #dde8f2; z-index: 99999; pointer-events: none;
+        animation: fade-out 600ms ease-out forwards;
+    }}
+    @keyframes fade-out {{ from {{ opacity: 1; }} to {{ opacity: 0; visibility: hidden; }} }}
+    
+    /* ── Input Bar Frost ── */
+    [data-testid="stChatInputContainer"] {{
+        background: linear-gradient(0deg, rgba(240,244,248,0.95) 0%, rgba(240,244,248,0.7) 100%) !important;
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-top: 0.5px solid rgba(143,168,192,0.2) !important;
+        padding-top: 1rem !important;
+    }}
+    [data-testid="stChatInputContainer"] button {{
+        color: {ACCENT_U} !important;
+    }}
+    
+    /* ── Enso Drawing Animation ── */
+    .enso-draw {{
+        stroke-dasharray: 100;
+        stroke-dashoffset: 100;
+        animation: draw-enso 1.5s ease-in-out infinite alternate;
+        transform-origin: center;
+        transform: rotate(-90deg);
+    }}
+    @keyframes draw-enso {{
+        0% {{ stroke-dashoffset: 100; }}
+        100% {{ stroke-dashoffset: 0; }}
+    }}
+    </style>
+    
+    <div class="mode-transition-overlay"></div>
+    <div class="particle-container">
+        <div class="particle-snow" style="left:15%; animation-duration: 22s; animation-delay: 0s; width:8px; height:8px;"></div>
+        <div class="particle-snow" style="left:35%; animation-duration: 30s; animation-delay: -5s; width:5px; height:5px; opacity: 0.15;"></div>
+        <div class="particle-snow" style="left:65%; animation-duration: 25s; animation-delay: -12s; width:7px; height:7px;"></div>
+        <div class="particle-snow" style="left:85%; animation-duration: 28s; animation-delay: -2s; width:6px; height:6px; opacity: 0.2;"></div>
+        <div class="particle-snow" style="left:45%; animation-duration: 35s; animation-delay: -18s; width:4px; height:4px; opacity: 0.1;"></div>
+        <div class="particle-snow" style="left:5%; animation-duration: 20s; animation-delay: -8s; width:9px; height:9px; opacity: 0.3;"></div>
+        <div class="particle-snow" style="left:55%; animation-duration: 27s; animation-delay: -15s; width:7px; height:7px;"></div>
+        <div class="particle-snow" style="left:92%; animation-duration: 24s; animation-delay: -4s; width:6px; height:6px; opacity: 0.25;"></div>
+    </div>
+    """
+    theme_name = " "
+    theme_sub = " "
+else:
+    # 🍵 LOCAL — washi paper, hinoki warmth, candle flicker, paper grain
+    ACCENT_U_LOCAL = "#c8a87a"
+    theme_css = f"""
+    <style>
+    {FONT_IMPORT}
+
+    /* SVG paper grain as data URI background */
+    html, body, [data-testid="stAppViewContainer"] {{
+        font-family: 'Zen Kaku Gothic New', sans-serif;
+        color: #2a1d0e;
+    }}
+    [data-testid="stAppViewContainer"] {{
+        background-color: #f5f0e8;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Cfilter id='grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='400' height='400' filter='url(%23grain)' opacity='0.035'/%3E%3C/svg%3E"),
+                          linear-gradient(160deg, #f5f0e8 0%, #ede0cc 45%, #e8d9c0 100%);
+        background-attachment: fixed;
+    }}
+    /* candle flicker on the entire page atmosphere */
+    [data-testid="stAppViewContainer"]::after {{
+        content: '';
+        position: fixed;
+        inset: 0;
+        background: radial-gradient(ellipse at 50% 30%, rgba(200,168,122,0.06) 0%, transparent 70%);
+        pointer-events: none;
+        z-index: 0;
+        animation: candle-flicker 3s ease-in-out infinite;
+    }}
+    @keyframes candle-flicker {{
+        0%,100% {{ opacity: 0.85; }}
+        20%      {{ opacity: 1; }}
+        40%      {{ opacity: 0.92; }}
+        60%      {{ opacity: 0.88; }}
+        80%      {{ opacity: 0.97; }}
+    }}
+    [data-testid="stHeader"] {{ background: transparent; }}
+
+    /* ── Wordmark ── */
+    .acuman-wordmark {{
+        font-family: 'Shippori Mincho', serif;
+        font-size: 2rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        color: #2a1d0e;
+        line-height: 1.2;
+        margin: 0.5rem 0 0.25rem 0;
+    }}
+    .acuman-wordmark .u-pivot {{
+        color: {ACCENT_U_LOCAL};
+        font-style: italic;
+    }}
+    .acuman-sub {{
+        font-family: 'Zen Kaku Gothic New', sans-serif;
+        font-size: 0.78rem;
+        font-weight: 300;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: #8a6a48;
+        margin-top: 0;
+    }}
+
+    /* ── Headings ── */
+    h1, h2, h3 {{
+        font-family: 'Shippori Mincho', serif !important;
+        color: #2a1d0e !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.02em !important;
+    }}
+    h2 {{ font-size: 1.35rem !important; }}
+    h3 {{ font-size: 1.1rem !important; }}
+
+    /* ── Sidebar ── */
+    [data-testid="stSidebar"] {{
+        background: linear-gradient(180deg, #f0e8d8 0%, #e8dcc8 100%) !important;
+        border-right: 0.5px solid rgba(200,168,122,0.28) !important;
+        padding: 1.5rem 0 !important;
+    }}
+    [data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] > p {{
+        color: #3a2a18 !important;
+        font-family: 'Zen Kaku Gothic New', sans-serif !important;
+    }}
+    [data-testid="stSidebar"] h1,
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3 {{
+        font-family: 'Shippori Mincho', serif !important;
+        color: #2a1d0e !important;
+        letter-spacing: 0.06em !important;
+    }}
+    [data-testid="stSidebar"] hr {{
+        border: none;
+        border-top: 0.5px solid rgba(200,168,122,0.22);
+        margin: 1.2rem 0;
+    }}
+
+    /* ── Chat Bubbles — washi warmth ── */
+    [data-testid="stChatMessage"] {{
+        background: rgba(245,240,232,0.88);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        border-radius: 18px;
+        padding: 20px 24px;
+        box-shadow: 0 4px 24px rgba(90,50,10,0.06), inset 0 0.5px 0 rgba(255,255,255,0.85);
+        border: 0.5px solid rgba(200,168,122,0.28);
+        color: #2a1d0e;
+        margin-bottom: 1rem;
+        transition: box-shadow 0.4s ease;
+    }}
+    [data-testid="stChatMessage"]:hover {{
+        box-shadow: 0 6px 28px rgba(90,50,10,0.10), inset 0 0.5px 0 rgba(255,255,255,1);
+        border-color: rgba(200,168,122,0.42);
+    }}
+
+    /* ── Chat Input ── */
+    [data-testid="stChatInputContainer"] > div,
+    .stChatInput > div {{
+        background: rgba(245,240,232,0.9) !important;
+        border: 0.5px solid rgba(200,168,122,0.35) !important;
+        border-radius: 14px !important;
+    }}
+    .stChatInput textarea {{
+        color: #2a1d0e !important;
+        font-family: 'Zen Kaku Gothic New', sans-serif !important;
+    }}
+
+    /* ── Expanders ── */
+    [data-testid="stExpander"] {{
+        background: rgba(245,240,232,0.65);
+        border: 0.5px solid rgba(200,168,122,0.22);
+        border-radius: 16px;
+    }}
+
+    /* ── Buttons ── */
+    .stButton > button {{
+        background: #5c3d1e !important;
+        color: #f5f0e8 !important;
+        border: 0.5px solid rgba(200,168,122,0.35) !important;
+        border-radius: 10px !important;
+        font-family: 'Zen Kaku Gothic New', sans-serif !important;
+        font-weight: 500 !important;
+        letter-spacing: 0.05em !important;
+        transition: all 0.35s ease !important;
+    }}
+    .stButton > button:hover {{
+        background: #6e4a28 !important;
+        box-shadow: 0 4px 16px rgba(92,61,30,0.2) !important;
+        transform: translateY(-1px) !important;
+    }}
+    .stDownloadButton > button {{
+        background: #5c3d1e !important;
+        color: #f5f0e8 !important;
+        border-radius: 10px !important;
+        border: 0.5px solid rgba(200,168,122,0.3) !important;
+        font-family: 'Zen Kaku Gothic New', sans-serif !important;
+    }}
+
+    /* ── Slider ── */
+    .stSlider > div > div > div {{
+        background-color: {ACCENT_U_LOCAL} !important;
+    }}
+
+    /* ── Text ── */
+    p, label, .stMarkdown, .stCaption, small,
+    [data-testid="stMarkdownContainer"] > p,
+    [data-testid="stMarkdownContainer"] > span {{
+        color: #3a2a18 !important;
+        font-family: 'Zen Kaku Gothic New', sans-serif !important;
+    }}
+    [data-testid="stAppViewContainer"] .stMarkdown h1,
+    [data-testid="stAppViewContainer"] .stMarkdown h2,
+    [data-testid="stAppViewContainer"] .stMarkdown h3 {{
+        font-family: 'Shippori Mincho', serif !important;
+        color: #2a1d0e !important;
+    }}
+
+    /* ── Divider ── */
+    hr {{
+        border: none;
+        border-top: 0.5px solid rgba(200,168,122,0.22);
+        margin: 1.8rem 0;
+    }}
+    
+    /* ── Ambient Particles (Smoke Wisps) ── */
+    .particle-container {{
+        position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden;
+    }}
+    .smoke-wisp {{
+        position: absolute; bottom: -10vh; width: 2px; height: 30vh;
+        background: linear-gradient(0deg, transparent 0%, rgba(200,168,122,0.08) 50%, transparent 100%);
+        filter: blur(8px);
+        animation: smoke-rise linear infinite;
+    }}
+    @keyframes smoke-rise {{
+        0% {{ transform: translateY(0) rotate(0deg) scaleX(1); opacity: 0; }}
+        20% {{ opacity: 1; }}
+        80% {{ opacity: 1; }}
+        100% {{ transform: translateY(-110vh) rotate(10deg) scaleX(3); opacity: 0; }}
+    }}
+    
+    /* ── Radio Sigil (Leaf) ── */
+    div[role="radiogroup"] label[data-baseweb="radio"] div:first-child {{
+        background-color: transparent !important;
+        border: 1px solid rgba(200,168,122,0.4) !important;
+    }}
+    div[role="radiogroup"] label[data-baseweb="radio"] input:checked + div {{
+        background-color: {ACCENT_U_LOCAL} !important;
+        border-color: {ACCENT_U_LOCAL} !important;
+        background-image: url("data:image/svg+xml,%3Csvg width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.78 10-10 10Z'%3E%3C/path%3E%3Cpath d='M2 22l10-10'%3E%3C/path%3E%3C/svg%3E") !important;
+        background-position: center !important;
+        background-repeat: no-repeat !important;
+    }}
+    div[role="radiogroup"] label[data-baseweb="radio"] input:checked + div div {{ display: none; }}
+    
+    /* ── Slider Personality (Amber Drop) ── */
+    div[data-testid="stThumbValue"] {{
+        background: {ACCENT_U_LOCAL} !important;
+        color: #fff !important;
+        font-family: 'Zen Kaku Gothic New', sans-serif !important;
+    }}
+    div[role="slider"] {{
+        background-color: #f5f0e8 !important;
+        border: 2px solid {ACCENT_U_LOCAL} !important;
+        box-shadow: 0 0 8px rgba(200,168,122,0.3) !important;
+        border-top-left-radius: 50% !important;
+        border-top-right-radius: 50% !important;
+        border-bottom-left-radius: 50% !important;
+        border-bottom-right-radius: 4px !important;
+        transform: rotate(-45deg) !important;
+        transition: all 0.2s ease !important;
+    }}
+    div[role="slider"]:hover {{ transform: rotate(-45deg) scale(1.15) !important; box-shadow: 2px 2px 10px rgba(200,168,122,0.4) !important; }}
+    div[role="slider"]:focus {{ transform: rotate(-45deg) scale(1.15) !important; }}
+    
+    /* ── Mode Transition Overlay ── */
+    .mode-transition-overlay {{
+        position: fixed; inset: 0; background: #ede0cc; z-index: 99999; pointer-events: none;
+        animation: fade-out 600ms ease-out forwards;
+    }}
+    @keyframes fade-out {{ from {{ opacity: 1; }} to {{ opacity: 0; visibility: hidden; }} }}
+    
+    /* ── Input Bar Warmth ── */
+    [data-testid="stChatInputContainer"] {{
+        background: linear-gradient(0deg, rgba(245,240,232,1) 0%, rgba(245,240,232,0.85) 100%) !important;
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        border-top: 0.5px solid rgba(200,168,122,0.25) !important;
+        padding-top: 1rem !important;
+    }}
+    [data-testid="stChatInputContainer"] button {{
+        color: {ACCENT_U_LOCAL} !important;
+    }}
+    
+    /* ── Enso Drawing Animation ── */
+    .enso-draw {{
+        stroke-dasharray: 100;
+        stroke-dashoffset: 100;
+        animation: draw-enso 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite alternate;
+        transform-origin: center;
+        transform: rotate(-90deg);
+    }}
+    @keyframes draw-enso {{
+        0% {{ stroke-dashoffset: 100; }}
+        100% {{ stroke-dashoffset: 0; }}
+    }}
+    </style>
+    
+    <div class="mode-transition-overlay"></div>
+    <div class="particle-container">
+        <div class="smoke-wisp" style="left:20%; animation-duration: 45s; animation-delay: 0s;"></div>
+        <div class="smoke-wisp" style="left:50%; animation-duration: 55s; animation-delay: -15s; width: 3px; filter: blur(12px); opacity: 0.7;"></div>
+        <div class="smoke-wisp" style="left:80%; animation-duration: 65s; animation-delay: -30s;"></div>
+    </div>
+    """
+    theme_name = " "
+    theme_sub = " "
+
+st.markdown(theme_css, unsafe_allow_html=True)
+
+# ── Acuman Wordmark ──
+if is_cloud:
+    u_color = "#8fa8c0"
+else:
+    u_color = "#c8a87a"
+
+st.markdown(
+    f"""
+    <div class="acuman-wordmark">Ac<span class="u-pivot">u</span>man</div>
+    <p class="acuman-sub">{theme_name} &nbsp;·&nbsp; {theme_sub}</p>
+    """,
+    unsafe_allow_html=True
+)
+
+# ── HAIKU TIME LOGIC ──
+current_hour = datetime.now().hour
+if 5 <= current_hour < 12:
+    haiku = "The mind wakes before the sun"
+elif 12 <= current_hour < 17:
+    haiku = "Each question, a stone skipped on water"
+elif 17 <= current_hour < 21:
+    haiku = "Slow thoughts carry the furthest"
+else:
+    haiku = "Wisdom rests, but does not sleep"
+
+st.markdown(f"<p style='text-align:center; font-family:\"Zen Kaku Gothic New\", sans-serif; font-style:italic; font-weight:300; opacity:0.65; margin-top:-10px; margin-bottom: 2rem; font-size: 0.9rem;'>{haiku}</p>", unsafe_allow_html=True)
 
 # --- 3. MINIMALIST SIDEBAR (Tabs Setup) ---
 with st.sidebar:
-    st.markdown("<h2 style='text-align: center;'>⚙️ Control Panel</h2>", unsafe_allow_html=True)
+    # Vertical Text Sidebar Header
+    if is_cloud:
+        st.markdown(
+            """
+            <div style='position:absolute; top:20px; left:-10px; writing-mode:vertical-rl; text-orientation:mixed; opacity:0.15; pointer-events:none; z-index:0;'>
+                <h2 style='font-family:Shippori Mincho,serif; letter-spacing:0.3em; font-size:3.5rem; margin:0 padding:0;'>制御盤</h2>
+            </div>
+            """, unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            """
+            <div style='position:absolute; top:20px; left:-10px; writing-mode:vertical-rl; text-orientation:mixed; opacity:0.12; pointer-events:none; z-index:0;'>
+                <h2 style='font-family:Shippori Mincho,serif; letter-spacing:0.3em; font-size:3.5rem; margin:0 padding:0;'>設定</h2>
+            </div>
+            """, unsafe_allow_html=True
+        )
     st.write("") # Spacer
     
-    # The Tabs to hide complexity
-    tab_core, tab_data, tab_tools = st.tabs(["🧠 Core", "📂 Data", "🔌 Tools"])
+    # Custom CSS for sidebar typography hierarchy
+    st.markdown("""
+        <style>
+        [data-testid="stSidebar"] h3 {
+            font-family: 'Shippori Mincho', serif !important;
+            font-size: 14px !important;
+            letter-spacing: 0.05em !important;
+            margin-bottom: -5px !important;
+            opacity: 0.9;
+        }
+        [data-testid="stSidebar"] p, [data-testid="stSidebar"] label {
+            font-weight: 300 !important;
+            font-size: 13px !important;
+        }
+        /* Style the tabs */
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 12px;
+        }
+        .stTabs [data-baseweb="tab"] {
+            padding-left: 8px; padding-right: 8px;
+            font-family: 'Zen Kaku Gothic New', sans-serif !important;
+            letter-spacing: 0.05em;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
+    # The Tabs to hide complexity — no emojis, clean text
+    tab_core, tab_data, tab_tools = st.tabs(["Core", "Data", "Hooks"])
 
-    # TAB 1: NEURAL ROUTING
+    # TAB 1: NEURAL ROUTING + CREATIVITY SLIDER
     with tab_core:
-        st.subheader("Neural Focus")
-        st.session_state.active_mode = st.radio(
+        st.markdown("### Neural Focus")
+        
+        selected_mode = st.radio(
             "Select Agent Environment:",
-            ["Cloud (Snow Leopard - IMDb)", "Local (Uploaded CSV - SQLite)"],
+            ["Cloud (Snow Leopard)", "Local (Uploaded CSV - SQLite)"],
             index=0 if "Cloud" in st.session_state.active_mode else 1,
             label_visibility="collapsed"
         )
-        st.caption("Determines which database the agent queries first.")
+        st.session_state.active_mode = selected_mode
+        
+        # Show mode change indicator
+        mode_changed = st.session_state.active_mode != st.session_state.confirmed_mode
+        
+        if mode_changed:
+            new_is_cloud = "Cloud" in st.session_state.active_mode
+            if new_is_cloud:
+                st.info("❄️ Switch to **Snow Leopard** theme?")
+            else:
+                st.info("🍵 Switch to **Cozy Local** theme?")
+            
+            if st.button("✅ Confirm Mode Switch", use_container_width=True, key="confirm_mode"):
+                st.session_state.confirmed_mode = st.session_state.active_mode
+                st.rerun()
+        else:
+            if is_cloud:
+                st.caption("Snow Leopard active — precision.")
+            else:
+                st.caption("Local mode active — warmth.")
+        
+        st.divider()
+        
+        # CREATIVITY SLIDER
+        st.markdown("### Intuition")
+        st.session_state.temperature = st.slider(
+            "Temperature",
+            min_value=0.0,
+            max_value=1.0,
+            value=st.session_state.temperature,
+            step=0.05,
+            help="Low = strict, clinical reporting. High = creative brainstorming."
+        )
+        temp_val = st.session_state.temperature
+        if temp_val <= 0.3:
+            st.caption("Precise & Clinical")
+        elif temp_val <= 0.5:
+            st.caption("Balanced")
+        elif temp_val <= 0.7:
+            st.caption("Exploratory")
+        else:
+            st.caption("Dreaming")
+
+        st.divider()
+
+        # WHISPER VOICE CONTROL
+        st.markdown("### Voice")
+        try:
+            from audio_recorder_streamlit import audio_recorder
+            audio_bytes = audio_recorder(
+                text="Click to record",
+                recording_color="#e74c3c",
+                neutral_color="#6c757d",
+                icon_size="2x",
+                pause_threshold=2.0
+            )
+            if audio_bytes:
+                # Basic check to avoid sending tiny empty clicks (WAV header only)
+                if len(audio_bytes) < 1000:
+                    st.warning("Audio too short. Please speak longer.")
+                else:
+                    with st.spinner("Transcribing with Whisper..."):
+                        try:
+                            audio_file = io.BytesIO(audio_bytes)
+                            audio_file.name = "recording.wav"
+                            transcription = agent.client.audio.transcriptions.create(
+                                file=audio_file,
+                                model="whisper-large-v3-turbo",
+                                response_format="text",
+                            )
+                            st.session_state.voice_transcript = transcription
+                            st.success(f'Transcribed: "{transcription}"')
+                        except Exception as e:
+                            st.error(f"Whisper API error: {e}")
+        except ImportError:
+            st.caption("Install `audio-recorder-streamlit` to enable voice input.")
 
     # TAB 2: THE LIBRARIAN (Data Ingestion)
     with tab_data:
-        st.subheader("Data Ingestion")
-        data_type = st.selectbox("Format", ("CSV (Spreadsheet)", "JSON"), label_visibility="collapsed")
-        uploaded_file = st.file_uploader("Drop dataset here", type=["csv", "json"])
+        st.markdown("### Data Ingestion")
+        data_type = st.selectbox("Format", ("CSV (Spreadsheet)", "JSON", "PDF (Document)"), label_visibility="collapsed")
+        
+        # Set accepted file types based on selection
+        accepted_types = ["csv", "json"]
+        if data_type == "PDF (Document)":
+            accepted_types = ["pdf"]
+        
+        uploaded_file = st.file_uploader("Drop dataset here", type=accepted_types)
         
         if uploaded_file is not None:
+            conn = None
             try:
-                conn = sqlite3.connect('hackathon_database.db')
+                conn = sqlite3.connect('hackathon_database.db', timeout=10)
                 MAX_COLUMNS = 500
                 
                 if data_type == "CSV (Spreadsheet)":
@@ -81,43 +787,145 @@ with st.sidebar:
                     progress_text = st.empty()
                     progress_text.text("Processing chunks...")
                     
-                    for chunk in pd.read_csv(uploaded_file, chunksize=chunk_size):
-                        if len(chunk.columns) > MAX_COLUMNS:
-                            chunk = chunk.iloc[:, :MAX_COLUMNS]
-                        if first_chunk:
-                            chunk.to_sql('user_data', conn, if_exists='replace', index=False)
-                            st.session_state.dataset_columns = ", ".join(chunk.columns.tolist())
-                            if len(chunk.columns) == MAX_COLUMNS:
-                                st.warning(f"Trimmed to {MAX_COLUMNS} columns.")
-                            first_chunk = False
+                    try:
+                        # Try robust reading with multiple encodings
+                        try:
+                            reader = pd.read_csv(uploaded_file, chunksize=chunk_size, on_bad_lines='skip')
+                        except UnicodeDecodeError:
+                            uploaded_file.seek(0)
+                            reader = pd.read_csv(uploaded_file, chunksize=chunk_size, encoding='ISO-8859-1', on_bad_lines='skip')
+                            
+                        for chunk in reader:
+                            if chunk.empty: continue
+                            if len(chunk.columns) > MAX_COLUMNS:
+                                chunk = chunk.iloc[:, :MAX_COLUMNS]
+                            if first_chunk:
+                                chunk.to_sql('user_data', conn, if_exists='replace', index=False)
+                                st.session_state.dataset_columns = ", ".join(chunk.columns.tolist())
+                                if len(chunk.columns) == MAX_COLUMNS:
+                                    st.warning(f"Trimmed to {MAX_COLUMNS} columns.")
+                                first_chunk = False
+                            else:
+                                chunk.to_sql('user_data', conn, if_exists='append', index=False)
+                        progress_text.empty()
+                    except pd.errors.EmptyDataError:
+                        st.error("The uploaded CSV file is empty.")
+                    
+                elif data_type == "JSON":
+                    try:
+                        df = pd.read_json(uploaded_file)
+                        if df.empty:
+                            st.error("The uploaded JSON file is empty.")
                         else:
-                            chunk.to_sql('user_data', conn, if_exists='append', index=False)
-                    progress_text.empty() 
-                else:
-                    df = pd.read_json(uploaded_file)
-                    if len(df.columns) > MAX_COLUMNS:
-                        df = df.iloc[:, :MAX_COLUMNS]
-                    df.to_sql('user_data', conn, if_exists='replace', index=False)
-                    st.session_state.dataset_columns = ", ".join(df.columns.tolist())
+                            if len(df.columns) > MAX_COLUMNS:
+                                df = df.iloc[:, :MAX_COLUMNS]
+                            df.to_sql('user_data', conn, if_exists='replace', index=False)
+                            st.session_state.dataset_columns = ", ".join(df.columns.tolist())
+                    except ValueError as e:
+                        st.error(f"Invalid JSON format: {e}")
+                    
+                elif data_type == "PDF (Document)":
+                    try:
+                        import pdfplumber
+                        pdf_rows = []
+                        with pdfplumber.open(uploaded_file) as pdf:
+                            for page_num, page in enumerate(pdf.pages, 1):
+                                text = page.extract_text() or ""
+                                # Chunk into ~500 character paragraphs
+                                chunks = [text[i:i+500] for i in range(0, len(text), 500)] if text else []
+                                for chunk_idx, chunk_text in enumerate(chunks):
+                                    pdf_rows.append({
+                                        "page_number": page_num,
+                                        "chunk_index": chunk_idx,
+                                        "text_content": chunk_text.strip()
+                                    })
+                        
+                        if pdf_rows:
+                            df = pd.DataFrame(pdf_rows)
+                            df.to_sql('user_data', conn, if_exists='replace', index=False)
+                            st.session_state.dataset_columns = "page_number, chunk_index, text_content"
+                        else:
+                            st.warning("No text could be extracted from this PDF. It might be scanned or encrypted.")
+                    except ImportError:
+                        st.error("Install `pdfplumber` to enable PDF ingestion.")
+                    except Exception as e:
+                        st.error(f"Failed to read PDF file: {e}")
                 
-                st.success("Database Active!")
-                with st.expander("Preview Local Data"):
-                    preview_df = pd.read_sql_query("SELECT * FROM user_data LIMIT 5", conn)
-                    st.dataframe(preview_df)
+                # Verify that a table was actually created
+                check_table = pd.read_sql_query("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='user_data'", conn)
+                if check_table.iloc[0, 0] > 0:
+                    st.success("Database Active!")
+                    with st.expander("Preview Local Data"):
+                        preview_df = pd.read_sql_query("SELECT * FROM user_data LIMIT 5", conn)
+                        st.dataframe(preview_df)
+                else:
+                    st.error("Database table could not be created from the uploaded file.")
             except Exception as e:
                 st.error(f"Upload failed: {e}")
+            finally:
+                if conn:
+                    conn.close()
                 
         st.divider()
         
-        # PREP FOR TEAMMATE: Vision Tool Uploader
-        st.subheader("Vision Processor")
-        st.file_uploader("Upload Image for Analysis", type=["png", "jpg", "jpeg"])
-        st.caption("Powered by YOLO/Gemini Vision")
+        # VISION PROCESSOR — Images + Videos
+        st.markdown("### Vision")
+        vision_file = st.file_uploader(
+            "Upload Image or Video for Analysis", 
+            type=["png", "jpg", "jpeg", "mp4"], 
+            key="vision_uploader"
+        )
+        
+        if vision_file is not None:
+            file_type = vision_file.type
+            
+            if file_type in ["image/png", "image/jpeg", "image/jpg"]:
+                # IMAGE handling
+                img_bytes = vision_file.read()
+                st.session_state.uploaded_image_b64 = base64.b64encode(img_bytes).decode("utf-8")
+                st.session_state.uploaded_video_bytes = None
+                st.image(img_bytes, caption="Uploaded Image", use_container_width=True)
+                
+                if st.button("🔍 Analyze Image", use_container_width=True):
+                    with st.spinner("Sending to Groq Vision model..."):
+                        result = agent.execute_vision_tool(
+                            st.session_state.uploaded_image_b64,
+                            "Describe this image in detail. Extract any text, data, charts, or key visual elements."
+                        )
+                        st.markdown("**Analysis Result:**")
+                        st.markdown(result)
+                        st.session_state.messages.append({"role": "assistant", "content": f"🖼️ **Vision Analysis:**\n\n{result}"})
+                        
+            elif file_type == "video/mp4":
+                # VIDEO handling
+                video_bytes = vision_file.read()
+                st.session_state.uploaded_video_bytes = video_bytes
+                st.session_state.uploaded_image_b64 = None
+                st.video(video_bytes)
+                
+                if st.button("🎬 Analyze Video", use_container_width=True):
+                    with st.spinner("Extracting frames & analyzing with Vision model..."):
+                        result = agent.execute_video_tool(
+                            video_bytes,
+                            "Analyze this video frame. Describe what you see including objects, actions, text, and scenery."
+                        )
+                        st.markdown("**Video Analysis Result:**")
+                        st.markdown(result)
+                        st.session_state.messages.append({"role": "assistant", "content": f"🎬 **Video Analysis:**\n\n{result}"})
+        else:
+            st.session_state.uploaded_image_b64 = None
+            st.session_state.uploaded_video_bytes = None
+        
+        st.caption("Powered by Groq Vision (Llama 3.2 90B) • Supports PNG, JPG, MP4")
 
     # TAB 3: INTEGRATIONS
     with tab_tools:
-        st.subheader("Communications")
-        st.text_input("Target Phone / Email", placeholder="+1 (555) 000-0000")
+        st.markdown("### Integrations")
+        st.session_state.contact_target = st.text_input(
+            "Target Phone / Email", 
+            value=st.session_state.contact_target,
+            placeholder="+1 (555) 000-0000"
+        )
         st.caption("Used by the Agent to send automated reports.")
 
 # --- 4. THE ANALYST DASHBOARD ---
@@ -132,61 +940,279 @@ try:
             sample_df = pd.read_sql_query("SELECT * FROM user_data LIMIT 100", conn)
             numeric_columns = sample_df.select_dtypes(include=['number']).columns.tolist()
 
-            col1, col2, col3 = st.columns(3)
-            with col1: chart_type = st.selectbox("Chart", ["Bar Chart", "Line Chart", "Scatter Plot"])
-            with col2: x_axis = st.selectbox("X-Axis", all_columns)
-            with col3: y_axis = st.selectbox("Y-Axis", numeric_columns)
-                
-            if st.button("Generate Visualization", use_container_width=True):
-                query = f"SELECT `{x_axis}`, `{y_axis}` FROM user_data LIMIT 1000"
-                chart_data = pd.read_sql_query(query, conn).set_index(x_axis)
-                
-                if chart_type == "Bar Chart": st.bar_chart(chart_data)
-                elif chart_type == "Line Chart": st.line_chart(chart_data)
-                elif chart_type == "Scatter Plot": 
-                    scatter_df = pd.read_sql_query(query, conn)
-                    st.scatter_chart(scatter_df, x=x_axis, y=y_axis)
+            if not all_columns or not numeric_columns:
+                st.info("Insufficient structured numerical data for visualization.")
+            else:
+                col1, col2, col3 = st.columns(3)
+                with col1: chart_type = st.selectbox("Chart", ["Bar Chart", "Line Chart", "Scatter Plot"])
+                with col2: x_axis = st.selectbox("X-Axis", all_columns)
+                with col3: y_axis = st.selectbox("Y-Axis", numeric_columns)
+                    
+                if st.button("Generate Visualization", use_container_width=True):
+                    try:
+                        query = f"SELECT `{x_axis}`, `{y_axis}` FROM user_data LIMIT 1000"
+                        chart_data = pd.read_sql_query(query, conn).set_index(x_axis)
+                        
+                        if chart_data.empty:
+                            st.warning("No data found for the selected axes.")
+                        else:
+                            if chart_type == "Bar Chart": st.bar_chart(chart_data)
+                            elif chart_type == "Line Chart": st.line_chart(chart_data)
+                            elif chart_type == "Scatter Plot": 
+                                scatter_df = pd.read_sql_query(query, conn)
+                                st.scatter_chart(scatter_df, x=x_axis, y=y_axis)
+                    except Exception as e:
+                        st.error(f"Visualization error: Failed to map data for axes properly. {e}")
 except Exception:
     pass
 
 st.write("") # Clean spacing
 
 # --- 5. THE CHAT INTERFACE ---
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
 
-if prompt := st.chat_input("Ask me to analyze data, identify an image, or send a report..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+# CSS for thinking display — theme-aware
+if is_cloud:
+    think_border = "#8fa8c0"
+    think_bg = "rgba(143,168,192,0.08)"
+    ring_color = "#8fa8c0"
+else:
+    think_border = "#c8a87a"
+    think_bg = "rgba(200,168,122,0.09)"
+    ring_color = "#c8a87a"
 
-    with st.chat_message("assistant"):
-        with st.spinner("Routing query to Groq & Data Sources..."):
-            raw_decision, final_answer = agent.ask_agent(
-                prompt, 
-                st.session_state.messages, 
-                st.session_state.dataset_columns,
-                st.session_state.active_mode
-            )
-            
-            try:
-                start_idx = raw_decision.find('{')
-                end_idx = raw_decision.rfind('}')
-                clean_json = raw_decision[start_idx:end_idx+1]
-                decision_dict = json.loads(clean_json)
-                
-                agent_thought = decision_dict.get("thought", "Processing...")
-                tool_used = decision_dict.get("tool", "Unknown Tool")
-                
-                with st.expander(f"🧠 Agent Thinking... (Routed to: {tool_used})"):
-                    st.write(f"**Internal Thought:** {agent_thought}")
-                    st.text("Raw JSON Execution:")
-                    st.code(clean_json, language="json")
-            except:
-                with st.expander("⚙️ View Agent Routing Logic"):
-                    st.code(raw_decision, language="json")
-            
-            st.markdown(final_answer)
+st.markdown(f"""
+<style>
+/* ── Thinking box ── */
+.thinking-box {{
+    background: {think_bg};
+    border-left: 2px solid {think_border};
+    border-radius: 0 10px 10px 0;
+    padding: 14px 18px;
+    margin: 10px 0;
+    font-size: 0.88em;
+    line-height: 1.6;
+    font-family: 'Zen Kaku Gothic New', sans-serif;
+}}
+.thinking-header {{
+    font-family: 'Shippori Mincho', serif;
+    font-weight: 600;
+    font-size: 0.95em;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: {think_border};
+    letter-spacing: 0.04em;
+}}
+
+/* ── Think-ring: meditative rotating arc ── */
+.think-ring {{
+    display: inline-block;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    border-top-color: {ring_color};
+    border-right-color: {ring_color}3a;
+    animation: think-rotate 3s linear infinite;
+    vertical-align: middle;
+}}
+@keyframes think-rotate {{
+    0%   {{ transform: rotate(0deg); }}
+    100% {{ transform: rotate(360deg); }}
+}}
+
+/* ── Tool badge ── */
+.tool-badge {{
+    display: inline-block;
+    padding: 3px 12px;
+    border-radius: 20px;
+    font-size: 0.78em;
+    font-family: 'Zen Kaku Gothic New', sans-serif;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+}}
+</style>
+""", unsafe_allow_html=True)
+
+def render_chat_message(msg):
+    # Avatar SVGs
+    if is_cloud:
+        # Snow Leopard Avatars
+        user_avatar = f"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='50' fill='%23dde8f2'/%3E%3Ctext x='50' y='53' font-family='Shippori Mincho, serif' font-size='44' font-weight='500' fill='%233a5068' text-anchor='middle' dominant-baseline='middle'%3EU%3C/text%3E%3C/svg%3E"
+        agent_avatar = f"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='50' fill='%238fa8c0'/%3E%3Ccircle cx='35' cy='35' r='6' fill='white'/%3E%3Ccircle cx='65' cy='40' r='5' fill='white'/%3E%3Ccircle cx='40' cy='65' r='7' fill='white'/%3E%3Ccircle cx='60' cy='60' r='4' fill='white'/%3E%3C/svg%3E"
+    else:
+        # Local Avatars
+        user_avatar = f"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='50' fill='%23ede0cc'/%3E%3Ctext x='50' y='53' font-family='Shippori Mincho, serif' font-size='44' font-weight='500' fill='%235c3d1e' text-anchor='middle' dominant-baseline='middle'%3EU%3C/text%3E%3C/svg%3E"
+        agent_avatar = f"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='50' fill='%23c8a87a'/%3E%3Cpath d='M 30,50 A 20,20 0 1,1 60,65' fill='none' stroke='white' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E"
+
+    avatar_to_use = user_avatar if msg["role"] == "user" else agent_avatar
+
+    with st.chat_message(msg["role"], avatar=avatar_to_use):
+        st.markdown(msg["content"])
+        
+        # Display references if any
+        if 'references' in msg and msg['references']:
+            with st.expander("Sources & Verification", expanded=False):
+                for ref in msg['references']:
+                    st.markdown(f"- {ref}")
+        
+        # Display thinking block if it exists
+        if 'thinking' in msg and msg['thinking']:
+            with st.expander("Agent Thought Process", expanded=False):
+                st.markdown(f"```python\n{msg['thinking']}\n```")
+
+        # Display chart if generated
+        if 'chart' in msg and msg['chart'] is not None:
+            chart_data = msg['chart']
+            x_col = chart_data.columns[0]
+            st.bar_chart(chart_data.set_index(x_col))
+
+for msg in st.session_state.messages:
+    render_chat_message(msg)
+
+# Use voice transcript if available, otherwise use chat input
+chat_prompt = None
+if st.session_state.voice_transcript:
+    chat_prompt = st.session_state.voice_transcript
+    st.session_state.voice_transcript = None  # Clear after use
+
+if manual_prompt := st.chat_input("Ask me to analyze data, identify an image, or send a report..."):
+    chat_prompt = manual_prompt
+
+if chat_prompt:
+    st.session_state.messages.append({"role": "user", "content": chat_prompt})
+    render_chat_message({"role": "user", "content": chat_prompt})
+
+    # Avatar SVG logic for live agent response
+    if is_cloud:
+        current_agent_avatar = f"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='50' fill='%238fa8c0'/%3E%3Ccircle cx='35' cy='35' r='6' fill='white'/%3E%3Ccircle cx='65' cy='40' r='5' fill='white'/%3E%3Ccircle cx='40' cy='65' r='7' fill='white'/%3E%3Ccircle cx='60' cy='60' r='4' fill='white'/%3E%3C/svg%3E"
+    else:
+        current_agent_avatar = f"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='50' fill='%23c8a87a'/%3E%3Cpath d='M 30,50 A 20,20 0 1,1 60,65' fill='none' stroke='white' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E"
+
+    with st.chat_message("assistant", avatar=current_agent_avatar):
+        # Thinking UI placeholder
+        thinking_placeholder = st.empty()
+        
+        # Enso Loader SVG
+        accent_color = ACCENT_U if is_cloud else ACCENT_U_LOCAL
+        enso_svg = f"""<svg width='18' height='18' viewBox='0 0 40 40' style='display:inline-block; vertical-align:-3px; margin-right:8px;'>
+                        <path class='enso-draw' d='M 20,4 A 16,16 0 1,1 5,28' fill='none' stroke='{accent_color}' stroke-width='3' stroke-linecap='round' pathLength='100'/>
+                    </svg>"""
+
+    thinking_html = f"""
+    <div class="thinking-box">
+        <div class="thinking-header">
+            {enso_svg} 思考 · Agent Thought
+        </div>
+        <div class="thinking-content">
+            <span style="opacity:0.7">Initiating thought sequence...</span>
+        </div>
+    </div>
+    """
+    thinking_placeholder.markdown(thinking_html, unsafe_allow_html=True)
+        
+    raw_decision, tool_name, tool_result, needs_synthesis = agent.ask_agent(
+        chat_prompt, 
+        st.session_state.messages, 
+        st.session_state.dataset_columns,
+        st.session_state.confirmed_mode,
+        temperature=st.session_state.temperature,
+        contact_target=st.session_state.contact_target if st.session_state.contact_target else None,
+        has_image=st.session_state.uploaded_image_b64 is not None,
+        has_video=st.session_state.uploaded_video_bytes is not None,
+        video_bytes=st.session_state.uploaded_video_bytes
+    )
+    
+    # Parse and display thinking
+    agent_thought = "Processing..."
+    tool_used = tool_name or "Unknown"
+    try:
+        start_idx = raw_decision.find('{')
+        end_idx = raw_decision.rfind('}')
+        clean_json = raw_decision[start_idx:end_idx+1]
+        decision_dict = json.loads(clean_json)
+        agent_thought = decision_dict.get("thought", "Processing...")
+        tool_used = decision_dict.get("tool", tool_name or "Unknown")
+    except:
+        clean_json = raw_decision
+    
+    # Tool badge colors
+    tool_colors = {
+        "query_live_data": ("☁️", "#2196f3", "rgba(33,150,243,0.12)"),
+        "query_local_data": ("💾", "#4caf50", "rgba(76,175,80,0.12)"),
+        "analyze_image": ("🖼️", "#9c27b0", "rgba(156,39,176,0.12)"),
+        "analyze_video": ("🎬", "#e91e63", "rgba(233,30,99,0.12)"),
+        "send_message": ("📨", "#ff9800", "rgba(255,152,0,0.12)"),
+        "direct_response": ("💬", "#607d8b", "rgba(96,125,139,0.12)"),
+    }
+    icon, badge_color, badge_bg = tool_colors.get(tool_used, ("⚙️", "#607d8b", "rgba(96,125,139,0.12)"))
+    
+    thinking_placeholder.markdown(
+        f'<div class="thinking-box">'
+        f'<div class="thinking-header">思考 &nbsp;·&nbsp; Agent Thought</div>'
+        f'<p style="margin:6px 0 12px 0;opacity:0.88;">{agent_thought}</p>'
+        f'<span class="tool-badge" style="background:{badge_bg};color:{badge_color};border:0.5px solid {badge_color}40;">'
+        f'{icon}&nbsp;{tool_used}</span>'
+        f'</div>',
+        unsafe_allow_html=True
+    )
+    
+    # Show raw JSON in a collapsible section
+    with st.expander("View raw routing JSON", expanded=False):
+        st.code(clean_json, language="json")
+    
+    # --- PHASE 2: RESPONSE (streamed) ---
+    import time
+    
+    if needs_synthesis:
+        # Stream the synthesis response token by token
+        final_answer = st.write_stream(
+            agent.stream_synthesis(chat_prompt, tool_result, st.session_state.temperature)
+        )
+    else:
+        # For non-database tools, simulate typing for the result
+        def type_result(text):
+            """Generator that yields small chunks to create typewriter effect."""
+            words = text.split(' ')
+            for i, word in enumerate(words):
+                yield word + (' ' if i < len(words) - 1 else '')
+                time.sleep(0.02)
+        
+        final_answer = st.write_stream(type_result(tool_result))
             
     st.session_state.messages.append({"role": "assistant", "content": final_answer})
+
+# --- 6. EXPORT REPORT ENGINE ---
+if st.session_state.messages:
+    st.divider()
+    
+    # Build the report from recent messages
+    def build_report():
+        report_lines = [
+            "# 📊 Acumen AI — Analysis Report",
+            f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"**Mode:** {st.session_state.confirmed_mode}",
+            f"**Creativity:** {st.session_state.temperature}",
+            "",
+            "---",
+            ""
+        ]
+        for msg in st.session_state.messages:
+            role = "🧑 User" if msg["role"] == "user" else "🤖 Acumen"
+            report_lines.append(f"### {role}")
+            report_lines.append(msg["content"])
+            report_lines.append("")
+        
+        report_lines.append("---")
+        report_lines.append("*Report generated by Acumen: Hybrid Neural Agent*")
+        return "\n".join(report_lines)
+    
+    report_md = build_report()
+    st.download_button(
+        label="📥 Export Report",
+        data=report_md,
+        file_name=f"acumen_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+        mime="text/markdown",
+        use_container_width=True
+    )

@@ -2,12 +2,17 @@ import os
 import requests
 import json
 import sqlite3
+import base64
+import re
 import pandas as pd
+from datetime import datetime
+import groq
 from groq import Groq
 
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-#tools. 
+# --- TOOLS ---
+
 def execute_snow_leopard_query(query):
     file_id = os.environ.get("SNOW_LEOPARD_FILE_ID")
     api_key = os.environ.get("SNOW_LEOPARD_API_KEY")
@@ -20,48 +25,150 @@ def execute_snow_leopard_query(query):
     payload = {"message": query}
     
     try:
-        r = requests.post(url, headers=headers, json=payload)
-        if r.status_code != 200:
-            return f"Snow Leopard Server Error ({r.status_code}): {r.text}"
+        r = requests.post(url, headers=headers, json=payload, timeout=15)
+        r.raise_for_status()
         return r.json().get("response", "No data found in the response.")
-    except Exception as e:
-        return f"Database connection error: {e}"
+    except requests.exceptions.Timeout:
+        return "Error: Snow Leopard API request timed out after 15 seconds."
+    except requests.exceptions.RequestException as e:
+        return f"Error connecting to Snow Leopard Server: {e}"
 
-def execute_vision_tool(image_data):
-    return "Vision analysis complete: [Placeholder]"
+def execute_vision_tool(image_b64, user_prompt="Describe this image in detail.", mime_type="image/jpeg"):
+    """Sends a base64-encoded image to Groq's vision model for analysis."""
+    try:
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{image_b64}",
+                            },
+                        },
+                    ],
+                }
+            ],
+            model="llama-3.2-11b-vision-preview",
+            temperature=0.3,
+            max_tokens=1024,
+        )
+        return chat_completion.choices[0].message.content
+    except groq.RateLimitError:
+        return "Error: Groq API rate limit exceeded. Please wait a moment and try again."
+    except groq.APIConnectionError:
+        return "Error: Failed to connect to Groq API. Please check your internet connection."
+    except groq.GroqError as e:
+        return f"Error: Groq Vision API error: {e}"
+    except Exception as e:
+        return f"Vision analysis error: {e}"
+
+def execute_video_tool(video_bytes, user_prompt="Analyze this video and describe what you see."):
+    """Extracts key frames from an MP4 video and analyzes them with the vision model."""
+    import tempfile, subprocess, glob, os as _os
+    import shutil
+    frames_analyzed = []
+    
+    tmpdir = None
+    try:
+        tmpdir = tempfile.mkdtemp()
+        video_path = _os.path.join(tmpdir, "input.mp4")
+        with open(video_path, "wb") as f:
+            f.write(video_bytes)
+        
+        # Extract 1 frame per second using ffmpeg
+        frame_pattern = _os.path.join(tmpdir, "frame_%03d.jpg")
+        try:
+            subprocess.run(
+                ["ffmpeg", "-i", video_path, "-vf", "fps=1", "-frames:v", "5", frame_pattern, "-y"],
+                capture_output=True, timeout=20, check=True
+            )
+        except subprocess.TimeoutExpired:
+            return "⚠️ Video processing timed out. The video might be too long or complex."
+        except subprocess.CalledProcessError as e:
+            return f"⚠️ Video processing failed (ffmpeg error): {e.stderr.decode('utf-8', errors='ignore')}"
+        
+        frame_files = sorted(glob.glob(_os.path.join(tmpdir, "frame_*.jpg")))
+        
+        if not frame_files:
+            return "⚠️ Could not extract any readable frames from the video."
+        
+        for i, frame_path in enumerate(frame_files[:5]):
+            with open(frame_path, "rb") as f:
+                frame_b64 = base64.b64encode(f.read()).decode("utf-8")
+            
+            result = execute_vision_tool(
+                frame_b64,
+                f"This is frame {i+1} of a video. {user_prompt}",
+                mime_type="image/jpeg"
+            )
+            frames_analyzed.append(f"**Frame {i+1}:** {result}")
+        
+        if frames_analyzed:
+            header = f"🎬 **Video Analysis** ({len(frames_analyzed)} frames analyzed)\n\n"
+            return header + "\n\n---\n\n".join(frames_analyzed)
+        else:
+            return "No frames could be analyzed successfully."
+            
+    except FileNotFoundError:
+        return "⚠️ `ffmpeg` is not installed. Install it with `brew install ffmpeg` to enable video analysis."
+    except Exception as e:
+        return f"Video analysis processing error: {e}"
+    finally:
+        if tmpdir and _os.path.exists(tmpdir):
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 def execute_messaging_tool(content, recipient):
-    return f"Message sent successfully to {recipient}!"
+    """Simulated messaging — formats a professional report dispatch."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return (
+        f"✅ **Message Dispatched Successfully**\n\n"
+        f"| Field | Details |\n"
+        f"|---|---|\n"
+        f"| **Recipient** | `{recipient}` |\n"
+        f"| **Timestamp** | {timestamp} |\n"
+        f"| **Status** | Delivered |\n\n"
+        f"**Message Content:**\n> {content}"
+    )
 
-# executes real SQL generated by Groq!
+# Executes real SQL generated by Groq
 def execute_local_sqlite_query(sql_query):
+    conn = None
     try:
-        conn = sqlite3.connect('hackathon_database.db')
+        conn = sqlite3.connect('hackathon_database.db', timeout=10)
         
-        
-        if "SELECT" not in sql_query.upper():
-            sql_query = "SELECT * FROM user_data LIMIT 10"
+        if "SELECT" not in sql_query.upper() and "PRAGMA" not in sql_query.upper():
+            return "Error: Only SELECT queries or PRAGMA commands are permitted for local data analysis."
             
         df = pd.read_sql_query(sql_query, conn)
+        
+        if df.empty:
+            return "Query executed successfully, but returned 0 rows. The data might not match your conditions."
         
         # Stop massive tables from blowing up Groq's token limit
         if len(df) > 50:
             df = df.head(50)
             
         return f"Raw Database Results:\n{df.to_markdown()}"
+    except (sqlite3.OperationalError, pd.io.sql.DatabaseError) as e:
+        return f"SQL Syntax or Database Error (The AI may have hallucinated a column): {e}"
     except Exception as e:
-        return f"SQL Error generated by agent: {e}"
+        return f"Unexpected Error executing SQL: {e}"
+    finally:
+        if conn:
+            conn.close()
 
-# --- 3. THE PARSER ---
-def parse_and_execute(llm_response):
+# --- THE PARSER ---
+def parse_and_execute(llm_response, image_b64=None, video_bytes=None):
     try:
-        start_idx = llm_response.find('{')
-        end_idx = llm_response.rfind('}')
-        
-        if start_idx != -1 and end_idx != -1:
-            clean_json_string = llm_response[start_idx:end_idx+1]
+        # Robust JSON extraction using regex to handle markdown wrappers or reasoning
+        json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
+        if json_match:
+            clean_json_string = json_match.group(0)
         else:
-            clean_json_string = llm_response # Fallback to raw response if JSON parsing fails
+            clean_json_string = llm_response
             
         decision = json.loads(clean_json_string)
         tool = decision.get("tool") or decision.get("name")
@@ -71,10 +178,20 @@ def parse_and_execute(llm_response):
             return tool, execute_snow_leopard_query(args.get("query", ""))
         elif tool == "query_local_data":
             return tool, execute_local_sqlite_query(args.get("sql_query", args.get("query", "")))
-        elif tool == "analyze_poster":
-            return tool, execute_vision_tool(args)
+        elif tool == "analyze_image":
+            if image_b64:
+                prompt = args.get("prompt", "Describe this image in detail and extract any data or text visible.")
+                return tool, execute_vision_tool(image_b64, prompt)
+            else:
+                return tool, "Error: No image is currently uploaded. Please upload an image in the 📂 Data tab first."
+        elif tool == "analyze_video":
+            if video_bytes:
+                prompt = args.get("prompt", "Analyze this video and describe what you see.")
+                return tool, execute_video_tool(video_bytes, prompt)
+            else:
+                return tool, "Error: No video is currently uploaded. Please upload a video in the 📂 Data tab first."
         elif tool == "send_message":
-            return tool, execute_messaging_tool(args.get("msg"), args.get("to"))
+            return tool, execute_messaging_tool(args.get("msg", args.get("content", "")), args.get("to", args.get("recipient", "Unknown")))
         elif tool == "direct_response":
             return tool, args.get("text", "I'm not sure how to respond to that.")
         else:
@@ -82,8 +199,13 @@ def parse_and_execute(llm_response):
             
     except json.JSONDecodeError:
         return "error", f"Error: Brain did not output valid JSON. Raw output: {llm_response}"
-#command center
-def ask_agent(user_input, chat_history=None, available_columns="Unknown", active_mode="Cloud"):
+
+# --- COMMAND CENTER ---
+def ask_agent(user_input, chat_history=None, available_columns="Unknown", active_mode="Cloud", temperature=0.1, contact_target=None, has_image=False, has_video=False, video_bytes=None):
+    """
+    Returns (raw_decision, tool_name, tool_result, needs_synthesis).
+    The caller should use stream_synthesis() if needs_synthesis is True.
+    """
     
     mode_instruction = ""
     if "Cloud" in active_mode:
@@ -91,15 +213,31 @@ def ask_agent(user_input, chat_history=None, available_columns="Unknown", active
     else:
         mode_instruction = f"You are currently in LOCAL mode. The SQLite table is named 'user_data'. The columns are: {available_columns}."
 
+    contact_instruction = ""
+    if contact_target:
+        contact_instruction = f"\nThe user has configured a contact target: {contact_target}. If they ask to send/text/email a summary or report, use the 'send_message' tool with this recipient."
+
+    image_instruction = ""
+    if has_image:
+        image_instruction = "\nThe user has uploaded an image for analysis. If they ask about an image, picture, photo, or chart, use the 'analyze_image' tool."
+
+    video_instruction = ""
+    if has_video:
+        video_instruction = "\nThe user has uploaded a video for analysis. If they ask about a video, clip, or footage, use the 'analyze_video' tool."
+
     system_prompt = f"""You are an elite AI Data Analyst. 
     {mode_instruction}
+    {contact_instruction}
+    {image_instruction}
+    {video_instruction}
     
-    You have 5 tools available:
+    You have 6 tools available:
     1. 'query_live_data' - args: {{"query": "search text"}}
     2. 'query_local_data' - args: {{"sql_query": "A VALID SQLITE SELECT QUERY. e.g. SELECT * FROM user_data WHERE..."}}
-    3. 'analyze_poster' - args: {{"image_url": "url"}}
-    4. 'send_message' - args: {{"msg": "text", "to": "recipient"}}
-    5. 'direct_response' - args: {{"text": "Your reply."}}
+    3. 'analyze_image' - args: {{"prompt": "What to analyze in the image"}}
+    4. 'analyze_video' - args: {{"prompt": "What to analyze in the video"}}
+    5. 'send_message' - args: {{"msg": "text content", "to": "recipient phone/email"}}
+    6. 'direct_response' - args: {{"text": "Your reply."}}
     
     CRITICAL INSTRUCTIONS:
     - If the user asks for local data, you MUST write a valid SQL query for the 'query_local_data' tool. 
@@ -121,35 +259,59 @@ def ask_agent(user_input, chat_history=None, available_columns="Unknown", active
     messages_payload.append({"role": "user", "content": user_input})
 
     try:
+        # Phase 1: Routing decision (not streamed — we need the full JSON)
         chat_completion = client.chat.completions.create(
             messages=messages_payload,
             model="llama-3.3-70b-versatile",
-            temperature=0.1,
+            temperature=temperature,
         )
         
         raw_decision = chat_completion.choices[0].message.content
-        tool_name, tool_result = parse_and_execute(raw_decision)
+        tool_name, tool_result = parse_and_execute(raw_decision, video_bytes=video_bytes)
         
-
-        if tool_name in ["query_live_data", "query_local_data"] and "Error" not in tool_result:
-            synthesis_prompt = f"""The user originally asked: "{user_input}".
-            You ran a database query and got this raw data back:
-            
-            {tool_result}
-            
-            Please read this data and answer the user's question directly. 
-            Do NOT just repeat the raw table. Summarize the findings, highlight trends, and provide meaningful analysis. You may include a small markdown table if it helps explain your points."""
-            
-            synth_completion = client.chat.completions.create(
-                messages=[{"role": "system", "content": synthesis_prompt}],
-                model="llama-3.3-70b-versatile",
-                temperature=0.4,
-            )
-            final_answer = synth_completion.choices[0].message.content
-            return raw_decision, final_answer
-            
-        # If it wasn't a database search, just return the direct text
-        return raw_decision, tool_result
+        needs_synthesis = tool_name in ["query_live_data", "query_local_data"] and isinstance(tool_result, str) and "Error" not in tool_result
+        return raw_decision, tool_name, tool_result, needs_synthesis
         
+    except groq.RateLimitError:
+        return '{"error": "API Failure", "tool": "error"}', "error", "Groq AI generation rate limit reached. Please wait a moment.", False
+    except groq.APIConnectionError:
+        return '{"error": "API Failure", "tool": "error"}', "error", "Network connection to Groq API failed.", False
+    except groq.GroqError as e:
+        return '{"error": "API Failure", "tool": "error"}', "error", f"Groq API Error: {e}", False
     except Exception as e:
-        return '{"error": "API Failure"}', f"Groq API Error: {e}"
+        return '{"error": "Unexpected Engine Failure", "tool": "error"}', "error", f"Core execution error: {e}", False
+
+
+def stream_synthesis(user_input, tool_result, temperature=0.1):
+    """
+    Generator that yields tokens for the synthesis response.
+    Used by the UI for typewriter streaming.
+    """
+    synthesis_prompt = f"""The user originally asked: "{user_input}".
+    You ran a database query and got this raw data back:
+    
+    {tool_result}
+    
+    Please read this data and answer the user's question directly. 
+    Do NOT just repeat the raw table. Summarize the findings, highlight trends, and provide meaningful analysis. You may include a small markdown table if it helps explain your points."""
+    
+    try:
+        stream = client.chat.completions.create(
+            messages=[{"role": "system", "content": synthesis_prompt}],
+            model="llama-3.3-70b-versatile",
+            temperature=min(temperature + 0.3, 1.0),
+            stream=True,
+        )
+        
+        for chunk in stream:
+            if chunk.choices[0].delta.content is not None:
+                yield chunk.choices[0].delta.content
+                
+    except groq.RateLimitError:
+        yield "\n\n⚠️ Analysis rate limit reached. Please hold on a moment before asking another question."
+    except groq.APIConnectionError:
+        yield "\n\n⚠️ Network connection interrupted while streaming analysis."
+    except groq.GroqError as e:
+        yield f"\n\n⚠️ Groq API Error during synthesis: {e}"
+    except Exception as e:
+        yield f"\n\n⚠️ Unexpected error during stream synthesis: {e}"
