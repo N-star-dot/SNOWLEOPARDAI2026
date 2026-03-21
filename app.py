@@ -13,23 +13,37 @@ st.set_page_config(page_title="Acumen AI", page_icon="🌊", layout="wide")
 # --- 2. MEMORY & STATE ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "dataset_columns" not in st.session_state:
-    st.session_state.dataset_columns = "IMDb default columns"
+
 if "active_mode" not in st.session_state:
     st.session_state.active_mode = "Cloud (Snow Leopard - IMDb)"
+
+# --- NEW: Initialize the dynamic UI variables ---
 if "confirmed_mode" not in st.session_state:
-    st.session_state.confirmed_mode = "Cloud (Snow Leopard - IMDb)"
+    st.session_state.confirmed_mode = st.session_state.active_mode
 if "temperature" not in st.session_state:
-    st.session_state.temperature = 0.1
+    st.session_state.temperature = 0.2
 if "contact_target" not in st.session_state:
     st.session_state.contact_target = ""
+if "voice_transcript" not in st.session_state:
+    st.session_state.voice_transcript = None
+if "last_ingested_file_id" not in st.session_state:
+    st.session_state.last_ingested_file_id = None
 if "uploaded_image_b64" not in st.session_state:
     st.session_state.uploaded_image_b64 = None
 if "uploaded_video_bytes" not in st.session_state:
     st.session_state.uploaded_video_bytes = None
-if "voice_transcript" not in st.session_state:
-    st.session_state.voice_transcript = None
 
+# THE AMNESIA FIX: Check the hard drive for the database on startup!
+if "dataset_columns" not in st.session_state:
+    try:
+        temp_conn = sqlite3.connect('hackathon_database.db')
+        cols_df = pd.read_sql_query("PRAGMA table_info(user_data)", temp_conn)
+        if not cols_df.empty:
+            st.session_state.dataset_columns = ", ".join(cols_df['name'].tolist())
+        else:
+            st.session_state.dataset_columns = "No local data uploaded yet."
+    except Exception:
+        st.session_state.dataset_columns = "No local data uploaded yet."
 # --- DYNAMIC THEME ENGINE ---
 is_cloud = "Cloud" in st.session_state.confirmed_mode
 
@@ -766,105 +780,180 @@ with st.sidebar:
     # TAB 2: THE LIBRARIAN (Data Ingestion)
     with tab_data:
         st.markdown("### Data Ingestion")
-        data_type = st.selectbox("Format", ("CSV (Spreadsheet)", "JSON", "PDF (Document)"), label_visibility="collapsed")
+        data_type = st.selectbox("Format", ("CSV (Spreadsheet)", "JSON", "PDF (Document)", "PPTX (Slides)", "DOCX (Document)"), label_visibility="collapsed")
         
         # Set accepted file types based on selection
         accepted_types = ["csv", "json"]
         if data_type == "PDF (Document)":
             accepted_types = ["pdf"]
+        elif data_type == "PPTX (Slides)":
+            accepted_types = ["pptx"]
+        elif data_type == "DOCX (Document)":
+            accepted_types = ["docx"]
         
         uploaded_file = st.file_uploader("Drop dataset here", type=accepted_types)
         
         if uploaded_file is not None:
             conn = None
-            try:
-                conn = sqlite3.connect('hackathon_database.db', timeout=10)
-                MAX_COLUMNS = 500
-                
-                if data_type == "CSV (Spreadsheet)":
-                    chunk_size = 10000
-                    first_chunk = True
-                    progress_text = st.empty()
-                    progress_text.text("Processing chunks...")
+            # Guard to prevent infinite re-processing and reruns
+            file_unique_id = f"{uploaded_file.name}_{uploaded_file.size}"
+            if st.session_state.get("last_ingested_file_id") != file_unique_id:
+                try:
+                    conn = sqlite3.connect('hackathon_database.db', timeout=10)
+                    MAX_COLUMNS = 500
                     
-                    try:
-                        # Try robust reading with multiple encodings
-                        try:
-                            reader = pd.read_csv(uploaded_file, chunksize=chunk_size, on_bad_lines='skip')
-                        except UnicodeDecodeError:
-                            uploaded_file.seek(0)
-                            reader = pd.read_csv(uploaded_file, chunksize=chunk_size, encoding='ISO-8859-1', on_bad_lines='skip')
-                            
-                        for chunk in reader:
-                            if chunk.empty: continue
-                            if len(chunk.columns) > MAX_COLUMNS:
-                                chunk = chunk.iloc[:, :MAX_COLUMNS]
-                            if first_chunk:
-                                chunk.to_sql('user_data', conn, if_exists='replace', index=False)
-                                st.session_state.dataset_columns = ", ".join(chunk.columns.tolist())
-                                if len(chunk.columns) == MAX_COLUMNS:
-                                    st.warning(f"Trimmed to {MAX_COLUMNS} columns.")
-                                first_chunk = False
-                            else:
-                                chunk.to_sql('user_data', conn, if_exists='append', index=False)
-                        progress_text.empty()
-                    except pd.errors.EmptyDataError:
-                        st.error("The uploaded CSV file is empty.")
-                    
-                elif data_type == "JSON":
-                    try:
-                        df = pd.read_json(uploaded_file)
-                        if df.empty:
-                            st.error("The uploaded JSON file is empty.")
-                        else:
-                            if len(df.columns) > MAX_COLUMNS:
-                                df = df.iloc[:, :MAX_COLUMNS]
-                            df.to_sql('user_data', conn, if_exists='replace', index=False)
-                            st.session_state.dataset_columns = ", ".join(df.columns.tolist())
-                    except ValueError as e:
-                        st.error(f"Invalid JSON format: {e}")
-                    
-                elif data_type == "PDF (Document)":
-                    try:
-                        import pdfplumber
-                        pdf_rows = []
-                        with pdfplumber.open(uploaded_file) as pdf:
-                            for page_num, page in enumerate(pdf.pages, 1):
-                                text = page.extract_text() or ""
-                                # Chunk into ~500 character paragraphs
-                                chunks = [text[i:i+500] for i in range(0, len(text), 500)] if text else []
-                                for chunk_idx, chunk_text in enumerate(chunks):
-                                    pdf_rows.append({
-                                        "page_number": page_num,
-                                        "chunk_index": chunk_idx,
-                                        "text_content": chunk_text.strip()
-                                    })
+                    if data_type == "CSV (Spreadsheet)":
+                        chunk_size = 10000
+                        first_chunk = True
+                        progress_text = st.empty()
+                        progress_text.text("Processing chunks...")
                         
-                        if pdf_rows:
-                            df = pd.DataFrame(pdf_rows)
-                            df.to_sql('user_data', conn, if_exists='replace', index=False)
-                            st.session_state.dataset_columns = "page_number, chunk_index, text_content"
-                        else:
-                            st.warning("No text could be extracted from this PDF. It might be scanned or encrypted.")
-                    except ImportError:
-                        st.error("Install `pdfplumber` to enable PDF ingestion.")
-                    except Exception as e:
-                        st.error(f"Failed to read PDF file: {e}")
-                
-                # Verify that a table was actually created
-                check_table = pd.read_sql_query("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='user_data'", conn)
+                        try:
+                            # Try robust reading with multiple encodings
+                            try:
+                                reader = pd.read_csv(uploaded_file, chunksize=chunk_size, on_bad_lines='skip')
+                            except UnicodeDecodeError:
+                                uploaded_file.seek(0)
+                                reader = pd.read_csv(uploaded_file, chunksize=chunk_size, encoding='ISO-8859-1', on_bad_lines='skip')
+                                
+                            for chunk in reader:
+                                if chunk.empty: continue
+                                if len(chunk.columns) > MAX_COLUMNS:
+                                    chunk = chunk.iloc[:, :MAX_COLUMNS]
+                                if first_chunk:
+                                    chunk.to_sql('user_data', conn, if_exists='replace', index=False)
+                                    st.session_state.dataset_columns = ", ".join(chunk.columns.tolist())
+                                    if len(chunk.columns) == MAX_COLUMNS:
+                                        st.warning(f"Trimmed to {MAX_COLUMNS} columns.")
+                                    first_chunk = False
+                                else:
+                                    chunk.to_sql('user_data', conn, if_exists='append', index=False)
+                            progress_text.empty()
+                        except pd.errors.EmptyDataError:
+                            st.error("The uploaded CSV file is empty.")
+                        
+                    elif data_type == "JSON":
+                        try:
+                            df = pd.read_json(uploaded_file)
+                            if df.empty:
+                                st.error("The uploaded JSON file is empty.")
+                            else:
+                                if len(df.columns) > MAX_COLUMNS:
+                                    df = df.iloc[:, :MAX_COLUMNS]
+                                df.to_sql('user_data', conn, if_exists='replace', index=False)
+                                st.session_state.dataset_columns = ", ".join(df.columns.tolist())
+                        except ValueError as e:
+                            st.error(f"Invalid JSON format: {e}")
+                        
+                    elif data_type == "PDF (Document)":
+                        try:
+                            import pdfplumber
+                            pdf_rows = []
+                            with pdfplumber.open(uploaded_file) as pdf:
+                                for page_num, page in enumerate(pdf.pages, 1):
+                                    text = page.extract_text() or ""
+                                    # Chunk into ~1000 character paragraphs for better context
+                                    chunks = [text[i:i+1000] for i in range(0, len(text), 1000)] if text else []
+                                    for chunk_idx, chunk_text in enumerate(chunks):
+                                        pdf_rows.append({
+                                            "page_number": page_num,
+                                            "chunk_index": chunk_idx,
+                                            "text_content": chunk_text.strip()
+                                        })
+                            
+                            if pdf_rows:
+                                df = pd.DataFrame(pdf_rows)
+                                df.to_sql('user_data', conn, if_exists='replace', index=False)
+                                st.session_state.dataset_columns = "page_number, chunk_index, text_content"
+                            else:
+                                st.warning("No text could be extracted from this PDF. It might be scanned or encrypted.")
+                        except Exception as e:
+                            st.error(f"Failed to read PDF file: {e}")
+     
+                    elif data_type == "PPTX (Slides)":
+                        try:
+                            from pptx import Presentation
+                            pptx_rows = []
+                            prs = Presentation(uploaded_file)
+                            for slide_num, slide in enumerate(prs.slides, 1):
+                                slide_text = []
+                                for shape in slide.shapes:
+                                    if hasattr(shape, "text"):
+                                        slide_text.append(shape.text)
+                                
+                                full_slide_text = "\n".join(slide_text).strip()
+                                if full_slide_text:
+                                    # For slides, we typically keep the whole slide content together unless it's massive
+                                    pptx_rows.append({
+                                        "page_number": slide_num,
+                                        "chunk_index": 0,
+                                        "text_content": full_slide_text
+                                    })
+                            
+                            if pptx_rows:
+                                df = pd.DataFrame(pptx_rows)
+                                df.to_sql('user_data', conn, if_exists='replace', index=False)
+                                st.session_state.dataset_columns = "page_number, chunk_index, text_content"
+                            else:
+                                st.warning("No text could be found in these slides.")
+                        except Exception as e:
+                            st.error(f"Failed to read PPTX file: {e}")
+
+                    elif data_type == "DOCX (Document)":
+                        try:
+                            import docx
+                            doc = docx.Document(uploaded_file)
+                            docx_rows = []
+                            full_text = []
+                            for para in doc.paragraphs:
+                                if para.text.strip():
+                                    full_text.append(para.text.strip())
+                            
+                            joined_text = "\n".join(full_text)
+                            # Chunk Word doc text into ~1000 chars
+                            chunks = [joined_text[i:i+1000] for i in range(0, len(joined_text), 1000)]
+                            for chunk_idx, chunk_text in enumerate(chunks):
+                                docx_rows.append({
+                                    "page_number": 1, # Word doesn't have reliable page numbers via this method
+                                    "chunk_index": chunk_idx,
+                                    "text_content": chunk_text.strip()
+                                })
+                            
+                            if docx_rows:
+                                df = pd.DataFrame(docx_rows)
+                                df.to_sql('user_data', conn, if_exists='replace', index=False)
+                                st.session_state.dataset_columns = "page_number, chunk_index, text_content"
+                            else:
+                                st.warning("This document appears to be empty.")
+                        except Exception as e:
+                            st.error(f"Failed to read Word document: {e}")
+
+                except Exception as e:
+                    st.error(f"Processing failed: {e}")
+                finally:
+                    if conn:
+                        conn.close()
+                    # Mark as ingested so we don't repeat this on next rerun
+                    st.session_state.last_ingested_file_id = file_unique_id
+                    
+                    # Switch mode if not already there
+                    if st.session_state.confirmed_mode != "Local (Uploaded CSV - SQLite)":
+                        st.session_state.active_mode = "Local (Uploaded CSV - SQLite)"
+                        st.session_state.confirmed_mode = "Local (Uploaded CSV - SQLite)"
+                        st.rerun()
+
+            # Always show success and preview if table exists (even if already ingested)
+            try:
+                check_conn = sqlite3.connect('hackathon_database.db')
+                check_table = pd.read_sql_query("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='user_data'", check_conn)
                 if check_table.iloc[0, 0] > 0:
                     st.success("Database Active!")
                     with st.expander("Preview Local Data"):
-                        preview_df = pd.read_sql_query("SELECT * FROM user_data LIMIT 5", conn)
+                        preview_df = pd.read_sql_query("SELECT * FROM user_data LIMIT 5", check_conn)
                         st.dataframe(preview_df)
-                else:
-                    st.error("Database table could not be created from the uploaded file.")
-            except Exception as e:
-                st.error(f"Upload failed: {e}")
-            finally:
-                if conn:
-                    conn.close()
+                check_conn.close()
+            except:
+                pass
                 
         st.divider()
         
@@ -1103,7 +1192,7 @@ if chat_prompt:
     thinking_html = f"""
     <div class="thinking-box">
         <div class="thinking-header">
-            {enso_svg} 思考 · Agent Thought
+            {enso_svg} Agent Thought
         </div>
         <div class="thinking-content">
             <span style="opacity:0.7">Initiating thought sequence...</span>
@@ -1137,30 +1226,26 @@ if chat_prompt:
     except:
         clean_json = raw_decision
     
-    # Tool badge colors
-    tool_colors = {
-        "query_live_data": ("☁️", "#2196f3", "rgba(33,150,243,0.12)"),
-        "query_local_data": ("💾", "#4caf50", "rgba(76,175,80,0.12)"),
-        "analyze_image": ("🖼️", "#9c27b0", "rgba(156,39,176,0.12)"),
-        "analyze_video": ("🎬", "#e91e63", "rgba(233,30,99,0.12)"),
-        "send_message": ("📨", "#ff9800", "rgba(255,152,0,0.12)"),
-        "direct_response": ("💬", "#607d8b", "rgba(96,125,139,0.12)"),
+    # Tool badge formatting and human-readable names
+    tool_info = {
+        "query_live_data": ("☁️", "Searching Database", "#2196f3", "rgba(33,150,243,0.12)"),
+        "query_local_data": ("💾", "Analyzing Files", "#4caf50", "rgba(76,175,80,0.12)"),
+        "analyze_image": ("🖼️", "Examining Image", "#9c27b0", "rgba(156,39,176,0.12)"),
+        "analyze_video": ("🎬", "Reviewing Video", "#e91e63", "rgba(233,30,99,0.12)"),
+        "send_message": ("📨", "Sending Message", "#ff9800", "rgba(255,152,0,0.12)"),
+        "direct_response": ("💬", "Generating Answer", "#607d8b", "rgba(96,125,139,0.12)"),
     }
-    icon, badge_color, badge_bg = tool_colors.get(tool_used, ("⚙️", "#607d8b", "rgba(96,125,139,0.12)"))
+    icon, label, badge_color, badge_bg = tool_info.get(tool_used, ("⚙️", "Processing", "#607d8b", "rgba(96,125,139,0.12)"))
     
     thinking_placeholder.markdown(
         f'<div class="thinking-box">'
-        f'<div class="thinking-header">思考 &nbsp;·&nbsp; Agent Thought</div>'
-        f'<p style="margin:6px 0 12px 0;opacity:0.88;">{agent_thought}</p>'
+        f'<div class="thinking-header">Agent Thought</div>'
+        f'<p style="margin:6px 0 12px 0;opacity:0.88; font-size: 0.95rem;">{agent_thought}</p>'
         f'<span class="tool-badge" style="background:{badge_bg};color:{badge_color};border:0.5px solid {badge_color}40;">'
-        f'{icon}&nbsp;{tool_used}</span>'
+        f'{icon}&nbsp;{label}</span>'
         f'</div>',
         unsafe_allow_html=True
     )
-    
-    # Show raw JSON in a collapsible section
-    with st.expander("View raw routing JSON", expanded=False):
-        st.code(clean_json, language="json")
     
     # --- PHASE 2: RESPONSE (streamed) ---
     import time

@@ -4,3 +4,5 @@ requests
 pandas
 pdfplumber
 audio-recorder-streamlit
+python-dotenv
+python-pptx

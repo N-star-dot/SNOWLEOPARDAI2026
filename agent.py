@@ -8,6 +8,10 @@ import pandas as pd
 from datetime import datetime
 import groq
 from groq import Groq
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
@@ -211,7 +215,7 @@ def ask_agent(user_input, chat_history=None, available_columns="Unknown", active
     if "Cloud" in active_mode:
         mode_instruction = "You are currently in CLOUD mode. Use 'query_live_data' for remote queries."
     else:
-        mode_instruction = f"You are currently in LOCAL mode. The SQLite table is named 'user_data'. The columns are: {available_columns}."
+        mode_instruction = f"You are currently in LOCAL mode. The SQLite table is named 'user_data' and contains content from uploaded files (CSV, PDF, PPTX slides, or DOCX documents). The columns are: {available_columns}."
 
     contact_instruction = ""
     if contact_target:
@@ -239,14 +243,23 @@ def ask_agent(user_input, chat_history=None, available_columns="Unknown", active
     5. 'send_message' - args: {{"msg": "text content", "to": "recipient phone/email"}}
     6. 'direct_response' - args: {{"text": "Your reply."}}
     
+    DYNAMIC ROLE ADAPTATION:
+    Analyze the user's intent and the retrieved data to adopt the most helpful persona:
+    - ACADEMIC/LECTURE DATA: Act as a 'Patient Tutor'. Explain concepts simply, solve problems step-by-step, and offer to test the user's knowledge.
+    - BUSINESS/FINANCIAL DATA: Act as a 'Strategic Consultant'. Identify trends, suggest optimizations, and provide clear actionable strategies for profit or efficiency.
+    - GENERAL DATA: Act as an elite 'Data Analyst'. Provide high-level insights and clear visualizations.
+
     CRITICAL INSTRUCTIONS:
+    - If the user asks about content from a PDF, Slide, or Document, you MUST use 'query_local_data' to retrieve it.
+    - If you don't know what's in the document yet, start by querying: SELECT * FROM user_data LIMIT 20
+    - For specific questions, use: SELECT * FROM user_data WHERE text_content LIKE '%keyword%'
     - If the user asks for local data, you MUST write a valid SQL query for the 'query_local_data' tool. 
     
     OUTPUT FORMAT:
-    You MUST output ONLY a valid JSON object. Include a "thought" first.
+    You MUST output ONLY a valid JSON object.
     {{
-        "thought": "your logic",
-        "tool": "the_tool",
+        "thought": "A clear, human-readable, and non-technical explanation of what you are doing right now (e.g. 'I am searching the lecture notes for a definition of gravity'). NO CODE OR SQL HERE.",
+        "tool": "the_tool_name",
         "args": {{"key": "value"}}
     }}"""
 
@@ -293,7 +306,12 @@ def stream_synthesis(user_input, tool_result, temperature=0.1):
     {tool_result}
     
     Please read this data and answer the user's question directly. 
-    Do NOT just repeat the raw table. Summarize the findings, highlight trends, and provide meaningful analysis. You may include a small markdown table if it helps explain your points."""
+    ADAPT YOUR PERSONA based on the data:
+    - If this is LECTURE/ACADEMIC data, act as a TEACHER. Explain concepts, show step-by-step solutions, and be encouraging.
+    - If this is BUSINESS/FINANCIAL data, act as a STRATEGIC CONSULTANT. Identify 'Why' things are happening and suggest 'What to do next' to improve profit or efficiency.
+    - Otherwise, be a high-level DATA ANALYST.
+    
+    Do NOT just repeat the raw table. Summarize the findings, highlight trends, and provide meaningful, ACTIONABLE analysis."""
     
     try:
         stream = client.chat.completions.create(
