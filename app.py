@@ -32,6 +32,8 @@ if "uploaded_image_b64" not in st.session_state:
     st.session_state.uploaded_image_b64 = None
 if "uploaded_video_bytes" not in st.session_state:
     st.session_state.uploaded_video_bytes = None
+if "run_proactive_eda" not in st.session_state:
+    st.session_state.run_proactive_eda = False
 
 # THE AMNESIA FIX: Check the hard drive for the database on startup!
 if "dataset_columns" not in st.session_state:
@@ -642,23 +644,6 @@ st.markdown(f"<p style='text-align:center; font-family:\"Zen Kaku Gothic New\", 
 
 # --- 3. MINIMALIST SIDEBAR (Tabs Setup) ---
 with st.sidebar:
-    # Vertical Text Sidebar Header
-    if is_cloud:
-        st.markdown(
-            """
-            <div style='position:absolute; top:20px; left:-10px; writing-mode:vertical-rl; text-orientation:mixed; opacity:0.15; pointer-events:none; z-index:0;'>
-                <h2 style='font-family:Shippori Mincho,serif; letter-spacing:0.3em; font-size:3.5rem; margin:0 padding:0;'>制御盤</h2>
-            </div>
-            """, unsafe_allow_html=True
-        )
-    else:
-        st.markdown(
-            """
-            <div style='position:absolute; top:20px; left:-10px; writing-mode:vertical-rl; text-orientation:mixed; opacity:0.12; pointer-events:none; z-index:0;'>
-                <h2 style='font-family:Shippori Mincho,serif; letter-spacing:0.3em; font-size:3.5rem; margin:0 padding:0;'>設定</h2>
-            </div>
-            """, unsafe_allow_html=True
-        )
     st.write("") # Spacer
     
     # Custom CSS for sidebar typography hierarchy
@@ -936,6 +921,10 @@ with st.sidebar:
                     # Mark as ingested so we don't repeat this on next rerun
                     st.session_state.last_ingested_file_id = file_unique_id
                     
+                    # Trigger proactive EDA for structured data (CSV/JSON only)
+                    if data_type in ("CSV (Spreadsheet)", "JSON"):
+                        st.session_state.run_proactive_eda = True
+                    
                     # Switch mode if not already there
                     if st.session_state.confirmed_mode != "Local (Uploaded CSV - SQLite)":
                         st.session_state.active_mode = "Local (Uploaded CSV - SQLite)"
@@ -1057,6 +1046,61 @@ except Exception:
 
 st.write("") # Clean spacing
 
+# --- PROACTIVE EDA HELPER ---
+def compute_eda_summary():
+    """Computes basic EDA stats from the user_data table for the proactive briefing."""
+    eda_conn = None
+    try:
+        eda_conn = sqlite3.connect('hackathon_database.db', timeout=10)
+        
+        # Row count
+        row_count = pd.read_sql_query("SELECT COUNT(*) as cnt FROM user_data", eda_conn).iloc[0, 0]
+        
+        # Column info
+        col_info = pd.read_sql_query("PRAGMA table_info(user_data)", eda_conn)
+        column_names = col_info['name'].tolist()
+        column_types = col_info['type'].tolist()
+        
+        # Sample for numeric analysis
+        sample_df = pd.read_sql_query("SELECT * FROM user_data LIMIT 100", eda_conn)
+        numeric_cols = sample_df.select_dtypes(include=['number']).columns.tolist()
+        
+        # Build summary
+        lines = [
+            f"**Rows:** {row_count}",
+            f"**Columns ({len(column_names)}):** {', '.join(column_names)}",
+            f"**Column types:** {', '.join(f'{n} ({t})' for n, t in zip(column_names, column_types))}",
+        ]
+        
+        if numeric_cols:
+            lines.append(f"**Numeric columns:** {', '.join(numeric_cols)}")
+            for col in numeric_cols[:5]:  # Limit to first 5 numeric columns
+                stats = sample_df[col].describe()
+                missing = sample_df[col].isnull().sum()
+                lines.append(
+                    f"  - {col}: min={stats.get('min', 'N/A')}, max={stats.get('max', 'N/A')}, "
+                    f"mean={stats.get('mean', 'N/A'):.2f}, missing={missing}"
+                )
+        else:
+            lines.append("**Numeric columns:** None detected (text-based dataset)")
+        
+        # Missing values overview
+        total_missing = sample_df.isnull().sum()
+        cols_with_missing = [(c, v) for c, v in total_missing.items() if v > 0]
+        if cols_with_missing:
+            lines.append(f"**Columns with missing values (in first 100 rows):** {', '.join(f'{c} ({v})' for c, v in cols_with_missing)}")
+        else:
+            lines.append("**Missing values:** None detected in sample")
+        
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Could not compute EDA: {e}"
+    finally:
+        if eda_conn:
+            eda_conn.close()
+
+
+
 # --- 5. THE CHAT INTERFACE ---
 
 # CSS for thinking display — theme-aware
@@ -1159,6 +1203,26 @@ def render_chat_message(msg):
 
 for msg in st.session_state.messages:
     render_chat_message(msg)
+
+# --- PROACTIVE EDA RENDERING ---
+if st.session_state.run_proactive_eda:
+    st.session_state.run_proactive_eda = False  # Clear flag immediately
+    
+    eda_summary = compute_eda_summary()
+    
+    # Determine avatar for the briefing message
+    if is_cloud:
+        briefing_avatar = f"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='50' fill='%238fa8c0'/%3E%3Ccircle cx='35' cy='35' r='6' fill='white'/%3E%3Ccircle cx='65' cy='40' r='5' fill='white'/%3E%3Ccircle cx='40' cy='65' r='7' fill='white'/%3E%3Ccircle cx='60' cy='60' r='4' fill='white'/%3E%3C/svg%3E"
+    else:
+        briefing_avatar = f"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='50' fill='%23c8a87a'/%3E%3Cpath d='M 30,50 A 20,20 0 1,1 60,65' fill='none' stroke='white' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E"
+    
+    with st.chat_message("assistant", avatar=briefing_avatar):
+        briefing_answer = st.write_stream(
+            agent.stream_proactive_briefing(eda_summary)
+        )
+    
+    st.session_state.messages.append({"role": "assistant", "content": briefing_answer})
+
 
 # Use voice transcript if available, otherwise use chat input
 chat_prompt = None

@@ -164,8 +164,71 @@ def execute_local_sqlite_query(sql_query):
         if conn:
             conn.close()
 
+# --- SQL HEALING LOOP ---
+def execute_sql_with_healing(sql_query, available_columns="Unknown"):
+    """
+    Wraps SQL execution with a self-healing retry loop.
+    If the query fails, feeds the error back to Llama 3.3 to rewrite it.
+    Max 2 retry attempts before failing gracefully.
+    """
+    MAX_RETRIES = 2
+    current_query = sql_query
+
+    for attempt in range(MAX_RETRIES + 1):
+        result = execute_local_sqlite_query(current_query)
+
+        # Check if the result is an error that can be healed
+        is_error = isinstance(result, str) and any(
+            result.startswith(prefix) for prefix in [
+                "SQL Syntax",
+                "Error:",
+                "Unexpected Error",
+            ]
+        )
+
+        if not is_error:
+            return result  # Success — pass through
+
+        # If we've exhausted retries, fail gracefully
+        if attempt >= MAX_RETRIES:
+            return (
+                "I attempted to query your data but encountered a persistent error "
+                "after multiple attempts. This may be due to a mismatch between the "
+                "question and the available data columns. "
+                f"Available columns are: {available_columns}. "
+                "Please try rephrasing your question."
+            )
+
+        # --- Hidden healing loop: ask Llama 3.3 to fix the query ---
+        healing_prompt = (
+            f"You are a SQL repair assistant. The following SQLite query failed:\n\n"
+            f"```sql\n{current_query}\n```\n\n"
+            f"The error was:\n{result}\n\n"
+            f"The table is named 'user_data' and has these columns: {available_columns}.\n\n"
+            f"Rewrite the query to fix the error. Output ONLY the corrected SQL query, "
+            f"no explanation, no markdown fences."
+        )
+
+        try:
+            repair_response = client.chat.completions.create(
+                messages=[{"role": "user", "content": healing_prompt}],
+                model="llama-3.3-70b-versatile",
+                temperature=0.0,
+            )
+            repaired_query = repair_response.choices[0].message.content.strip()
+            # Strip markdown fences if the model wraps them anyway
+            if repaired_query.startswith("```"):
+                repaired_query = repaired_query.strip("`").strip()
+                if repaired_query.lower().startswith("sql"):
+                    repaired_query = repaired_query[3:].strip()
+            current_query = repaired_query
+        except Exception:
+            # If the healing call itself fails, return the original error
+            return result
+
+
 # --- THE PARSER ---
-def parse_and_execute(llm_response, image_b64=None, video_bytes=None):
+def parse_and_execute(llm_response, image_b64=None, video_bytes=None, available_columns="Unknown"):
     try:
         # Robust JSON extraction using regex to handle markdown wrappers or reasoning
         json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
@@ -181,7 +244,7 @@ def parse_and_execute(llm_response, image_b64=None, video_bytes=None):
         if tool == "query_live_data":
             return tool, execute_snow_leopard_query(args.get("query", ""))
         elif tool == "query_local_data":
-            return tool, execute_local_sqlite_query(args.get("sql_query", args.get("query", "")))
+            return tool, execute_sql_with_healing(args.get("sql_query", args.get("query", "")), available_columns)
         elif tool == "analyze_image":
             if image_b64:
                 prompt = args.get("prompt", "Describe this image in detail and extract any data or text visible.")
@@ -280,7 +343,7 @@ def ask_agent(user_input, chat_history=None, available_columns="Unknown", active
         )
         
         raw_decision = chat_completion.choices[0].message.content
-        tool_name, tool_result = parse_and_execute(raw_decision, video_bytes=video_bytes)
+        tool_name, tool_result = parse_and_execute(raw_decision, video_bytes=video_bytes, available_columns=available_columns)
         
         needs_synthesis = tool_name in ["query_live_data", "query_local_data"] and isinstance(tool_result, str) and "Error" not in tool_result
         return raw_decision, tool_name, tool_result, needs_synthesis
@@ -333,3 +396,41 @@ def stream_synthesis(user_input, tool_result, temperature=0.1):
         yield f"\n\n⚠️ Groq API Error during synthesis: {e}"
     except Exception as e:
         yield f"\n\n⚠️ Unexpected error during stream synthesis: {e}"
+
+
+# --- PROACTIVE EDA BRIEFING ---
+def stream_proactive_briefing(eda_summary):
+    """
+    Generator that streams a proactive welcome briefing after a dataset upload.
+    Takes a pre-computed EDA summary and asks Llama 3.3 to generate a warm
+    welcome with 3 specific suggested questions.
+    """
+    briefing_prompt = (
+        f"You are an elite AI Data Analyst named Acumen. A user just uploaded a new dataset. "
+        f"Here is the automated Exploratory Data Analysis summary:\n\n"
+        f"{eda_summary}\n\n"
+        f"Generate a warm, concise welcome briefing (3-5 sentences max) that:\n"
+        f"1. Acknowledges the dataset and highlights 1-2 interesting observations from the EDA.\n"
+        f"2. Suggests EXACTLY 3 specific, actionable questions the user can ask about THIS data. "
+        f"Format them as a numbered list. Make the questions specific to the actual column names and data characteristics.\n\n"
+        f"Keep the tone professional but approachable. Use markdown formatting."
+    )
+
+    try:
+        stream = client.chat.completions.create(
+            messages=[{"role": "user", "content": briefing_prompt}],
+            model="llama-3.3-70b-versatile",
+            temperature=0.4,
+            stream=True,
+        )
+
+        for chunk in stream:
+            if chunk.choices[0].delta.content is not None:
+                yield chunk.choices[0].delta.content
+
+    except groq.RateLimitError:
+        yield "\n\n⚠️ Rate limit reached while generating briefing. You can still ask questions about your data!"
+    except groq.APIConnectionError:
+        yield "\n\n⚠️ Network connection interrupted. Your data is loaded — go ahead and ask a question!"
+    except Exception as e:
+        yield f"\n\n⚠️ Could not generate briefing: {e}. Your data is ready for analysis!"
