@@ -55,7 +55,7 @@ def execute_vision_tool(image_b64, user_prompt="Describe this image in detail.",
                     ],
                 }
             ],
-            model="llama-3.2-11b-vision-preview",
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
             temperature=0.3,
             max_tokens=1024,
         )
