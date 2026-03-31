@@ -268,7 +268,7 @@ def parse_and_execute(llm_response, image_b64=None, video_bytes=None, available_
         return "error", f"Error: Brain did not output valid JSON. Raw output: {llm_response}"
 
 # --- COMMAND CENTER ---
-def ask_agent(user_input, chat_history=None, available_columns="Unknown", active_mode="Cloud", temperature=0.1, contact_target=None, has_image=False, has_video=False, video_bytes=None, research_lens=None):
+def ask_agent(user_input, chat_history=None, available_columns="Unknown", active_mode="Cloud", temperature=0.1, contact_target=None, has_image=False, has_video=False, image_b64=None, video_bytes=None):
     """
     Returns (raw_decision, tool_name, tool_result, needs_synthesis).
     The caller should use stream_synthesis() if needs_synthesis is True.
@@ -325,7 +325,9 @@ def ask_agent(user_input, chat_history=None, available_columns="Unknown", active
     CRITICAL INSTRUCTIONS:
     - If the user asks about content from a PDF, Slide, or Document, you MUST use 'query_local_data' to retrieve it.
     - If you don't know what's in the document yet, start by querying: SELECT * FROM user_data LIMIT 20
-    - For specific questions, use: SELECT * FROM user_data WHERE text_content LIKE '%keyword%'
+    - For specific questions, write SQL using ONLY the available columns listed above.
+    - If one of the columns contains extracted text from documents, use that column with LIKE '%keyword%'.
+    - If you are unsure which column holds the text, first query: SELECT * FROM user_data LIMIT 5
     - If the user asks for local data, you MUST write a valid SQL query for the 'query_local_data' tool. 
     
     OUTPUT FORMAT:
@@ -353,7 +355,11 @@ def ask_agent(user_input, chat_history=None, available_columns="Unknown", active
         )
         
         raw_decision = chat_completion.choices[0].message.content
-        tool_name, tool_result = parse_and_execute(raw_decision, video_bytes=video_bytes, available_columns=available_columns)
+        tool_name, tool_result = parse_and_execute(
+            raw_decision,
+            image_b64=image_b64,
+            video_bytes=video_bytes,
+            available_columns=available_columns)
         
         needs_synthesis = tool_name in ["query_live_data", "query_local_data"] and isinstance(tool_result, str) and "Error" not in tool_result
         return raw_decision, tool_name, tool_result, needs_synthesis
