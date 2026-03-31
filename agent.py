@@ -268,7 +268,7 @@ def parse_and_execute(llm_response, image_b64=None, video_bytes=None, available_
         return "error", f"Error: Brain did not output valid JSON. Raw output: {llm_response}"
 
 # --- COMMAND CENTER ---
-def ask_agent(user_input, chat_history=None, available_columns="Unknown", active_mode="Cloud", temperature=0.1, contact_target=None, has_image=False, has_video=False, video_bytes=None):
+def ask_agent(user_input, chat_history=None, available_columns="Unknown", active_mode="Cloud", temperature=0.1, contact_target=None, has_image=False, has_video=False, video_bytes=None, research_lens=None):
     """
     Returns (raw_decision, tool_name, tool_result, needs_synthesis).
     The caller should use stream_synthesis() if needs_synthesis is True.
@@ -292,11 +292,21 @@ def ask_agent(user_input, chat_history=None, available_columns="Unknown", active
     if has_video:
         video_instruction = "\nThe user has uploaded a video for analysis. If they ask about a video, clip, or footage, use the 'analyze_video' tool."
 
+    lens_instruction = ""
+    if research_lens and research_lens.strip():
+        lens_instruction = (
+            f"\n\nRESEARCH LENS ACTIVE: The user is researching the following thesis: \"{research_lens.strip()}\". "
+            "When querying data, prioritize results relevant to this perspective. "
+            "When selecting what to retrieve, favor data points that are most likely to support, challenge, or illuminate this thesis. "
+            "Do NOT ignore contradicting evidence — note it as well."
+        )
+
     system_prompt = f"""You are an elite AI Data Analyst. 
     {mode_instruction}
     {contact_instruction}
     {image_instruction}
     {video_instruction}
+    {lens_instruction}
     
     You have 6 tools available:
     1. 'query_live_data' - args: {{"query": "search text"}}
@@ -358,23 +368,33 @@ def ask_agent(user_input, chat_history=None, available_columns="Unknown", active
         return '{"error": "Unexpected Engine Failure", "tool": "error"}', "error", f"Core execution error: {e}", False
 
 
-def stream_synthesis(user_input, tool_result, temperature=0.1):
+def stream_synthesis(user_input, tool_result, temperature=0.1, research_lens=None):
     """
     Generator that yields tokens for the synthesis response.
     Used by the UI for typewriter streaming.
     """
+    lens_framing = ""
+    if research_lens and research_lens.strip():
+        lens_framing = (
+            f"\n\nIMPORTANT — RESEARCH LENS: Frame your entire analysis through this thesis: \"{research_lens.strip()}\". "
+            "Explicitly connect the findings back to this thesis. "
+            "Highlight data points that support it, note any contradictions or counterevidence, "
+            "and draw cross-data connections that strengthen or challenge the argument. "
+            "End with a brief 'Lens Summary' section that evaluates the thesis in light of this data."
+        )
+
     synthesis_prompt = f"""The user originally asked: "{user_input}".
     You ran a database query and got this raw data back:
-    
+
     {tool_result}
-    
-    Please read this data and answer the user's question directly. 
+
+    Please read this data and answer the user's question directly.
     ADAPT YOUR PERSONA based on the data:
     - If this is LECTURE/ACADEMIC data, act as a TEACHER. Explain concepts, show step-by-step solutions, and be encouraging.
     - If this is BUSINESS/FINANCIAL data, act as a STRATEGIC CONSULTANT. Identify 'Why' things are happening and suggest 'What to do next' to improve profit or efficiency.
     - Otherwise, be a high-level DATA ANALYST.
-    
-    Do NOT just repeat the raw table. Summarize the findings, highlight trends, and provide meaningful, ACTIONABLE analysis."""
+
+    Do NOT just repeat the raw table. Summarize the findings, highlight trends, and provide meaningful, ACTIONABLE analysis.{lens_framing}"""
     
     try:
         stream = client.chat.completions.create(

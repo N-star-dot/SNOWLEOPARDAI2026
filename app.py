@@ -35,6 +35,8 @@ if "uploaded_video_bytes" not in st.session_state:
     st.session_state.uploaded_video_bytes = None
 if "run_proactive_eda" not in st.session_state:
     st.session_state.run_proactive_eda = False
+if "research_lens" not in st.session_state:
+    st.session_state.research_lens = ""
 
 # THE AMNESIA FIX: Check the hard drive for the database on startup!
 if "dataset_columns" not in st.session_state:
@@ -731,6 +733,39 @@ with st.sidebar:
 
         st.divider()
 
+        # RESEARCH LENS
+        st.markdown("### 🔬 Research Lens")
+        st.caption("Set an analytical perspective to bias how the agent queries and frames results.")
+
+        lens_presets = {
+            "Economic Growth Focus": "Evaluate how the data relates to economic growth, productivity, GDP impact, and industrialization outcomes.",
+            "Social Equity Focus": "Analyze the data through the lens of social equity, income inequality, access to resources, and impact on marginalized groups.",
+            "Environmental Impact Focus": "Examine the data for environmental consequences, sustainability, carbon footprint, and ecological trade-offs.",
+            "Neutral / Unbiased": "",
+        }
+
+        preset_cols = st.columns(2)
+        for i, (label, lens_text) in enumerate(lens_presets.items()):
+            col = preset_cols[i % 2]
+            if col.button(label, use_container_width=True, key=f"lens_preset_{i}"):
+                st.session_state.research_lens = lens_text
+
+        st.session_state.research_lens = st.text_area(
+            "Custom thesis / perspective",
+            value=st.session_state.research_lens,
+            placeholder='e.g. "Evaluate the economic benefits of communism on industrialization"',
+            height=90,
+            label_visibility="collapsed",
+            key="research_lens_input",
+        )
+
+        if st.session_state.research_lens.strip():
+            st.caption(f"Lens active: _{st.session_state.research_lens[:60]}{'...' if len(st.session_state.research_lens) > 60 else ''}_")
+        else:
+            st.caption("No lens — neutral analysis.")
+
+        st.divider()
+
         # WHISPER VOICE CONTROL
         st.markdown("### Voice")
         try:
@@ -1300,15 +1335,16 @@ if chat_prompt:
     thinking_placeholder.markdown(thinking_html, unsafe_allow_html=True)
         
     raw_decision, tool_name, tool_result, needs_synthesis = agent.ask_agent(
-        chat_prompt, 
-        st.session_state.messages, 
+        chat_prompt,
+        st.session_state.messages,
         st.session_state.dataset_columns,
         st.session_state.confirmed_mode,
         temperature=st.session_state.temperature,
         contact_target=st.session_state.contact_target if st.session_state.contact_target else None,
         has_image=st.session_state.uploaded_image_b64 is not None,
         has_video=st.session_state.uploaded_video_bytes is not None,
-        video_bytes=st.session_state.uploaded_video_bytes
+        video_bytes=st.session_state.uploaded_video_bytes,
+        research_lens=st.session_state.research_lens if st.session_state.research_lens.strip() else None,
     )
     
     # Parse and display thinking
@@ -1355,7 +1391,7 @@ if chat_prompt:
     if needs_synthesis:
         # Stream the synthesis response token by token
         final_answer = st.write_stream(
-            agent.stream_synthesis(chat_prompt, tool_result, st.session_state.temperature)
+            agent.stream_synthesis(chat_prompt, tool_result, st.session_state.temperature, research_lens=st.session_state.research_lens if st.session_state.research_lens.strip() else None)
         )
     else:
         # For non-database tools, simulate typing for the result
