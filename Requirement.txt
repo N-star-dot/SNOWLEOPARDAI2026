@@ -6,3 +6,4 @@ pdfplumber
 audio-recorder-streamlit
 python-dotenv
 python-pptx
+python-docx

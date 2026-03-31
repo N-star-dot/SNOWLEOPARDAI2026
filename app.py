@@ -4,7 +4,8 @@ import sqlite3
 import json
 import base64
 import io
-import agent 
+import html
+import agent
 from datetime import datetime
 
 # --- 1. UI SETUP ---
@@ -837,8 +838,18 @@ with st.sidebar:
                             with pdfplumber.open(uploaded_file) as pdf:
                                 for page_num, page in enumerate(pdf.pages, 1):
                                     text = page.extract_text() or ""
-                                    # Chunk into ~1000 character paragraphs for better context
-                                    chunks = [text[i:i+1000] for i in range(0, len(text), 1000)] if text else []
+                                    # Chunk at line boundaries to avoid breaking mid-sentence
+                                    chunks = []
+                                    if text:
+                                        current = ""
+                                        for line in text.splitlines(keepends=True):
+                                            if len(current) + len(line) > 1000 and current:
+                                                chunks.append(current.strip())
+                                                current = line
+                                            else:
+                                                current += line
+                                        if current.strip():
+                                            chunks.append(current.strip())
                                     for chunk_idx, chunk_text in enumerate(chunks):
                                         pdf_rows.append({
                                             "page_number": page_num,
@@ -895,8 +906,17 @@ with st.sidebar:
                                     full_text.append(para.text.strip())
                             
                             joined_text = "\n".join(full_text)
-                            # Chunk Word doc text into ~1000 chars
-                            chunks = [joined_text[i:i+1000] for i in range(0, len(joined_text), 1000)]
+                            # Chunk at paragraph boundaries to avoid breaking mid-sentence
+                            chunks = []
+                            current = ""
+                            for line in joined_text.splitlines(keepends=True):
+                                if len(current) + len(line) > 1000 and current:
+                                    chunks.append(current.strip())
+                                    current = line
+                                else:
+                                    current += line
+                            if current.strip():
+                                chunks.append(current.strip())
                             for chunk_idx, chunk_text in enumerate(chunks):
                                 docx_rows.append({
                                     "page_number": 1, # Word doesn't have reliable page numbers via this method
@@ -932,6 +952,7 @@ with st.sidebar:
                         st.rerun()
 
             # Always show success and preview if table exists (even if already ingested)
+            check_conn = None
             try:
                 check_conn = sqlite3.connect('hackathon_database.db')
                 check_table = pd.read_sql_query("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='user_data'", check_conn)
@@ -940,9 +961,11 @@ with st.sidebar:
                     with st.expander("Preview Local Data"):
                         preview_df = pd.read_sql_query("SELECT * FROM user_data LIMIT 5", check_conn)
                         st.dataframe(preview_df)
-                check_conn.close()
-            except:
-                pass
+            except Exception as e:
+                st.error(f"Could not load database preview: {e}")
+            finally:
+                if check_conn:
+                    check_conn.close()
                 
         st.divider()
         
@@ -955,24 +978,29 @@ with st.sidebar:
         )
         
         if vision_file is not None:
-            file_type = vision_file.type
-            
+            file_type = vision_file.type or ""
+
             if file_type in ["image/png", "image/jpeg", "image/jpg"]:
                 # IMAGE handling
                 img_bytes = vision_file.read()
-                st.session_state.uploaded_image_b64 = base64.b64encode(img_bytes).decode("utf-8")
-                st.session_state.uploaded_video_bytes = None
-                st.image(img_bytes, caption="Uploaded Image", use_container_width=True)
-                
-                if st.button("🔍 Analyze Image", use_container_width=True):
-                    with st.spinner("Sending to Groq Vision model..."):
-                        result = agent.execute_vision_tool(
-                            st.session_state.uploaded_image_b64,
-                            "Describe this image in detail. Extract any text, data, charts, or key visual elements."
-                        )
-                        st.markdown("**Analysis Result:**")
-                        st.markdown(result)
-                        st.session_state.messages.append({"role": "assistant", "content": f"🖼️ **Vision Analysis:**\n\n{result}"})
+                MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB
+                if len(img_bytes) > MAX_IMAGE_BYTES:
+                    st.error("Image exceeds 10 MB limit. Please upload a smaller image.")
+                    img_bytes = None
+                if img_bytes:
+                    st.session_state.uploaded_image_b64 = base64.b64encode(img_bytes).decode("utf-8")
+                    st.session_state.uploaded_video_bytes = None
+                    st.image(img_bytes, caption="Uploaded Image", use_container_width=True)
+
+                    if st.button("🔍 Analyze Image", use_container_width=True):
+                        with st.spinner("Sending to Groq Vision model..."):
+                            result = agent.execute_vision_tool(
+                                st.session_state.uploaded_image_b64,
+                                "Describe this image in detail. Extract any text, data, charts, or key visual elements."
+                            )
+                            st.markdown("**Analysis Result:**")
+                            st.markdown(result)
+                            st.session_state.messages.append({"role": "assistant", "content": f"🖼️ **Vision Analysis:**\n\n{result}"})
                         
             elif file_type == "video/mp4":
                 # VIDEO handling
@@ -1000,22 +1028,23 @@ with st.sidebar:
     with tab_tools:
         st.markdown("### Integrations")
         st.session_state.contact_target = st.text_input(
-            "Target Phone / Email", 
+            "Target Phone / Email",
             value=st.session_state.contact_target,
             placeholder="+1 (555) 000-0000"
         )
-        st.caption("Used by the Agent to send automated reports.")
+        st.caption("Used by the Agent to send automated reports. Note: message sending is simulated — no actual messages are delivered.")
 
 # --- 4. THE ANALYST DASHBOARD ---
+_dash_conn = None
 try:
-    conn = sqlite3.connect('hackathon_database.db')
-    check_df = pd.read_sql_query("SELECT 1 FROM user_data LIMIT 1", conn)
-    
+    _dash_conn = sqlite3.connect('hackathon_database.db')
+    check_df = pd.read_sql_query("SELECT 1 FROM user_data LIMIT 1", _dash_conn)
+
     if not check_df.empty:
         with st.expander("📊 Open Analyst Dashboard"):
-            columns_df = pd.read_sql_query("PRAGMA table_info(user_data)", conn)
+            columns_df = pd.read_sql_query("PRAGMA table_info(user_data)", _dash_conn)
             all_columns = columns_df['name'].tolist()
-            sample_df = pd.read_sql_query("SELECT * FROM user_data LIMIT 100", conn)
+            sample_df = pd.read_sql_query("SELECT * FROM user_data LIMIT 100", _dash_conn)
             numeric_columns = sample_df.select_dtypes(include=['number']).columns.tolist()
 
             if not all_columns or not numeric_columns:
@@ -1025,24 +1054,29 @@ try:
                 with col1: chart_type = st.selectbox("Chart", ["Bar Chart", "Line Chart", "Scatter Plot"])
                 with col2: x_axis = st.selectbox("X-Axis", all_columns)
                 with col3: y_axis = st.selectbox("Y-Axis", numeric_columns)
-                    
+
                 if st.button("Generate Visualization", use_container_width=True):
                     try:
-                        query = f"SELECT `{x_axis}`, `{y_axis}` FROM user_data LIMIT 1000"
-                        chart_data = pd.read_sql_query(query, conn).set_index(x_axis)
-                        
-                        if chart_data.empty:
-                            st.warning("No data found for the selected axes.")
-                        else:
-                            if chart_type == "Bar Chart": st.bar_chart(chart_data)
-                            elif chart_type == "Line Chart": st.line_chart(chart_data)
-                            elif chart_type == "Scatter Plot": 
-                                scatter_df = pd.read_sql_query(query, conn)
-                                st.scatter_chart(scatter_df, x=x_axis, y=y_axis)
+                        # Use a fresh connection for the chart query to avoid state issues
+                        with sqlite3.connect('hackathon_database.db') as chart_conn:
+                            query = f"SELECT `{x_axis}`, `{y_axis}` FROM user_data LIMIT 1000"
+                            chart_data = pd.read_sql_query(query, chart_conn).set_index(x_axis)
+
+                            if chart_data.empty:
+                                st.warning("No data found for the selected axes.")
+                            else:
+                                if chart_type == "Bar Chart": st.bar_chart(chart_data)
+                                elif chart_type == "Line Chart": st.line_chart(chart_data)
+                                elif chart_type == "Scatter Plot":
+                                    scatter_df = pd.read_sql_query(query, chart_conn)
+                                    st.scatter_chart(scatter_df, x=x_axis, y=y_axis)
                     except Exception as e:
                         st.error(f"Visualization error: Failed to map data for axes properly. {e}")
 except Exception:
-    pass
+    pass  # No database yet — dashboard is intentionally hidden
+finally:
+    if _dash_conn:
+        _dash_conn.close()
 
 st.write("") # Clean spacing
 
@@ -1283,13 +1317,17 @@ if chat_prompt:
     try:
         start_idx = raw_decision.find('{')
         end_idx = raw_decision.rfind('}')
-        clean_json = raw_decision[start_idx:end_idx+1]
-        decision_dict = json.loads(clean_json)
-        agent_thought = decision_dict.get("thought", "Processing...")
-        tool_used = decision_dict.get("tool", tool_name or "Unknown")
-    except:
-        clean_json = raw_decision
-    
+        if start_idx != -1 and end_idx > start_idx:
+            clean_json = raw_decision[start_idx:end_idx+1]
+            decision_dict = json.loads(clean_json)
+            agent_thought = decision_dict.get("thought", "Processing...")
+            tool_used = decision_dict.get("tool", tool_name or "Unknown")
+    except (json.JSONDecodeError, ValueError):
+        pass  # Keep defaults; raw_decision was already used by ask_agent
+
+    # Escape LLM-generated text before embedding in HTML to prevent XSS
+    agent_thought_safe = html.escape(agent_thought)
+
     # Tool badge formatting and human-readable names
     tool_info = {
         "query_live_data": ("☁️", "Searching Database", "#2196f3", "rgba(33,150,243,0.12)"),
@@ -1300,11 +1338,11 @@ if chat_prompt:
         "direct_response": ("💬", "Generating Answer", "#607d8b", "rgba(96,125,139,0.12)"),
     }
     icon, label, badge_color, badge_bg = tool_info.get(tool_used, ("⚙️", "Processing", "#607d8b", "rgba(96,125,139,0.12)"))
-    
+
     thinking_placeholder.markdown(
         f'<div class="thinking-box">'
         f'<div class="thinking-header">Agent Thought</div>'
-        f'<p style="margin:6px 0 12px 0;opacity:0.88; font-size: 0.95rem;">{agent_thought}</p>'
+        f'<p style="margin:6px 0 12px 0;opacity:0.88; font-size: 0.95rem;">{agent_thought_safe}</p>'
         f'<span class="tool-badge" style="background:{badge_bg};color:{badge_color};border:0.5px solid {badge_color}40;">'
         f'{icon}&nbsp;{label}</span>'
         f'</div>',

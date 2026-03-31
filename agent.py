@@ -3,7 +3,6 @@ import requests
 import json
 import sqlite3
 import base64
-import re
 import pandas as pd
 from datetime import datetime
 import groq
@@ -230,10 +229,11 @@ def execute_sql_with_healing(sql_query, available_columns="Unknown"):
 # --- THE PARSER ---
 def parse_and_execute(llm_response, image_b64=None, video_bytes=None, available_columns="Unknown"):
     try:
-        # Robust JSON extraction using regex to handle markdown wrappers or reasoning
-        json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
-        if json_match:
-            clean_json_string = json_match.group(0)
+        # Robust JSON extraction: find outermost braces to handle markdown wrappers
+        _start = llm_response.find('{')
+        _end = llm_response.rfind('}')
+        if _start != -1 and _end > _start:
+            clean_json_string = llm_response[_start:_end + 1]
         else:
             clean_json_string = llm_response
             
